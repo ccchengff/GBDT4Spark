@@ -66,6 +66,14 @@ public class BinaryGradPair implements GradPair, Serializable {
         return new BinaryGradPair(grad, hess);
     }
 
+    public float getGrad() {
+        return grad;
+    }
+
+    public float getHess() {
+        return hess;
+    }
+
     @Override
     public String toString() {
         return "(" + grad + ", " + hess + ")";

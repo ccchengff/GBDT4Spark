@@ -83,6 +83,14 @@ public class MultiGradPair implements GradPair, Serializable {
         return new MultiGradPair(grad.clone(), hess.clone());
     }
 
+    public float[] getGrad() {
+        return grad;
+    }
+
+    public float[] getHess() {
+        return hess;
+    }
+
     @Override
     public String toString() {
         String gradStr = Arrays.toString(grad);

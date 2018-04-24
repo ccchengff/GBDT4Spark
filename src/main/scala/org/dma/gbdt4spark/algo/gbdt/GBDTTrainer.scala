@@ -559,7 +559,8 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     toSplit.foreach(node => {
       val nid = node._1
       val splitEntry = node._2.getSplitEntry
-      if (splitEntry.isEmpty || splitEntry.getGain <= param.minSplitGain) {
+      if (splitEntry == null || splitEntry.isEmpty
+        || splitEntry.getGain <= param.minSplitGain) {
         leaves += nid
       } else if (splitEntry.getGain > bestGain) {
         bestNid = nid

@@ -1,5 +1,6 @@
 package org.dma.gbdt4spark.util;
 
+import java.util.List;
 import java.util.Random;
 
 public class Maths {
@@ -127,6 +128,14 @@ public class Maths {
             array[index] = array[i];
             array[i] = temp;
         }
+    }
+
+    public static float[] floatListToArray(List<Float> list) {
+        int size = list.size();
+        float[] arr = new float[size];
+        for (int i = 0; i < size; i++)
+            arr[i] = list.get(i);
+        return arr;
     }
 
     public static int indexOf(float[] splits, float x) {

@@ -1,25 +1,47 @@
 package org.dma.gbdt4spark.tree.split;
 
 import org.apache.spark.ml.linalg.Vector;
+import org.dma.gbdt4spark.util.Maths;
 
 import java.util.Arrays;
 
 public class SplitSet extends SplitEntry {
     private float[] edges;
+    private int firstFlow;
+    private int defaultFlow;
+
+    public SplitSet() {
+        this(-1, 0.0f, null, -1, -1);
+    }
+
+    public SplitSet(int fid, float gain, float[] edges, int firstFlow, int defaultFlow) {
+        super(fid, gain);
+        this.edges = edges;
+        this.firstFlow = firstFlow;
+        this.defaultFlow = defaultFlow;
+    }
 
     @Override
     public int flowTo(float x) {
-        return 0;
+        if (edges.length == 1) {
+            return firstFlow;
+        } else {
+            int index = Maths.indexOf(edges, x);
+            if (Maths.isEven(index))
+                return firstFlow;
+            else
+                return 1 - firstFlow;
+        }
     }
 
     @Override
     public int flowTo(Vector x) {
-        return 0;
+        return flowTo((float) x.apply(fid));
     }
 
     @Override
     public int defaultTo() {
-        return 0;
+        return defaultFlow;
     }
 
     @Override
@@ -29,7 +51,7 @@ public class SplitSet extends SplitEntry {
 
     @Override
     public String toString() {
-        return String.format("%s fid[%d] edges%s gain[%f]",
-                this.splitType(), fid, Arrays.toString(edges), gain);
+        return String.format("%s fid[%d] edges%s firstFlow[%d] defaultFlow[%d] gain[%f]",
+                this.splitType(), fid, Arrays.toString(edges), firstFlow, defaultFlow, gain);
     }
 }
