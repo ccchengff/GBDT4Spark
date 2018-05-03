@@ -449,39 +449,17 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           val startTime = System.currentTimeMillis()
           val partition = iter.next()
           val partId = partition._1
-          // 1. get sampled feature rows
           val sampledFeats = partition._2
-          val numSampledFeat = sampledFeats.length
-          val sampledFeatRows = new Array[FeatureRow](numSampledFeat)
-          var curFid = bcFeatureEdges.value(partId)
-          var cnt = 0
-          while (featRowIter.hasNext && cnt < numSampledFeat) {
-            val featRow = featRowIter.next()
-            if (curFid == sampledFeats(cnt)) {
-              sampledFeatRows(cnt) = featRow match {
-                case Some(row) => row
-                case None => null
-              }
-              cnt += 1
-            }
-            curFid += 1
-          }
-          // 2. get instance position info
-          val targetNid = nid
+          val featLo = bcFeatureEdges.value(partId)
+          val featureRows = featRowIter.toArray
+          val featureInfo = bcFeatureInfo.value
           val dataInfo = partition._3
-          val nodeStart = dataInfo.nodePosStart(targetNid)
-          val nodeEnd = dataInfo.nodePosEnd(targetNid)
-          val insPos = dataInfo.insPos
-          // 3. get grad pairs and sum of grad pairs
-          val gradPairs = dataInfo.gradPairs
+          val targetNid = nid
           val sumGradPair = bcSumGradPair.value
-          // 3. get default bins
-          val defaultBins = bcFeatureInfo.value.defaultBins
           val histBuilder = new HistBuilder(bcParam.value)
-          val histograms = histBuilder.buildHistograms(sampledFeatRows,
-            nodeStart, nodeEnd, insPos, gradPairs, sumGradPair, defaultBins)
-            .map(hist => Option(hist))
-          LOG.info(s"Part[$partId] build histogram for node[$nid] " +
+          val histograms = histBuilder.buildHistograms(sampledFeats, featLo,
+            featureRows, featureInfo, dataInfo, targetNid, sumGradPair)
+          LOG.info(s"Part[$partId] build histogram for node[$targetNid] " +
             s"cost ${System.currentTimeMillis() - startTime} ms")
           histograms.iterator
         }

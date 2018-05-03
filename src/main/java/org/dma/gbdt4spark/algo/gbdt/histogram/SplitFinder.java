@@ -54,7 +54,7 @@ public class SplitFinder {
                 : new MultiGradPair(param.numClass, param.fullHessian);
         GradPair rightStat = sumGradPair.copy();
         GradPair bestLeftStat = null, bestRightStat = null;
-        for (int i = 0; i < histogram.getNumSplit() - 1; i++) {
+        for (int i = 0; i < histogram.getNumBin() - 1; i++) {
             leftStat.plusBy(histogram.get(i));
             rightStat.subtractBy(histogram.get(i));
             if (leftStat.satisfyWeight(param) && rightStat.satisfyWeight(param)) {
@@ -81,7 +81,7 @@ public class SplitFinder {
         int firstFlow = -1, curFlow = -1, curSplitId = 0;
         List<Float> edges = new ArrayList<>();
         edges.add(Float.NEGATIVE_INFINITY);
-        for (int i = 0; i < histogram.getNumSplit(); i++) {
+        for (int i = 0; i < histogram.getNumBin(); i++) {
             if (i == defaultBin) continue; // skip default bin
             GradPair binGradPair = histogram.get(i);
             int flowTo = binFlowTo(sumGradPair, leftStat, binGradPair);

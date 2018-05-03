@@ -172,4 +172,8 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
         predictions(offset + k) += update_(k)
     }
   }
+
+  def getNodePosStart(nid: Int) = nodePosStart(nid)
+
+  def getNodePosEnd(nid: Int) = nodePosEnd(nid)
 }
