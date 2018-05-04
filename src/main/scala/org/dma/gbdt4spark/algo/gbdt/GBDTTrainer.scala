@@ -46,6 +46,9 @@ object GBDTTrainer {
         labels(i) -= 1
     }
   }
+
+  type NodeHistMap = collection.mutable.Map[Int, Array[Option[Histogram]]]
+  private var nodeHists: collection.mutable.Map[Int, NodeHistMap] = _
 }
 
 
@@ -76,7 +79,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
   @transient private var toBuild: collection.mutable.Map[Int, Int] = _
   @transient private var toFind: collection.mutable.Set[Int] = _
   @transient private var toSplit: collection.mutable.Map[Int, GBTSplit] = _
-  @transient private var nodeHists: collection.mutable.Map[Int, RDD[Option[Histogram]]] = _
+  @transient private var storedNodeHists: collection.mutable.Set[Int] = _
 
   def loadData(input: String, validRatio: Double): Unit = {
     val loadStart = System.currentTimeMillis()
@@ -279,7 +282,15 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     toBuild = collection.mutable.Map()
     toFind = collection.mutable.Set()
     toSplit = collection.mutable.Map()
-    nodeHists = collection.mutable.Map()
+    storedNodeHists = collection.mutable.Set()
+    partitions.foreachPartition(iterator => {
+      val partId = iterator.next()._1
+      GBDTTrainer.getClass.synchronized{
+        if (GBDTTrainer.nodeHists == null)
+          GBDTTrainer.nodeHists = collection.mutable.Map()
+        GBDTTrainer.nodeHists += partId -> collection.mutable.Map()
+      }
+    })
 
     while (phase != GBDTPhase.FINISHED) {
       LOG.info(s"******Current phase: $phase******")
@@ -399,49 +410,45 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
 
   def buildHistogram(nid: Int): Unit = {
     val startTime = System.currentTimeMillis()
-    var resultRdd: RDD[Option[Histogram]] = null
 
     // 1. calculate from subtraction
+    var canSubtract = false
     if (nid != 0) {
       val parentNid = Maths.parent(nid)
       val siblingNid = Maths.sibling(nid)
-      if (nodeHists.contains(parentNid) && nodeHists.contains(siblingNid)) {
-        val parHistRdd = nodeHists(parentNid)
-        val sibHistRdd = nodeHists(siblingNid)
-        resultRdd = partitions.zipPartitions(parHistRdd, sibHistRdd, preservesPartitioning = true)(
-          (iter, parIter, sibIter) => {
-            val startTime = System.currentTimeMillis()
-            val partition = iter.next()
-            val partId = partition._1
-            val numSampledFeats = partition._2.length
-            val histograms = new ArrayBuffer[Option[Histogram]](numSampledFeats)
-            while (parIter.hasNext && sibIter.hasNext) {
-              val hist = (parIter.next(), sibIter.next()) match {
-                case (Some(parHist), Some(sibHist)) => Option(parHist.subtract(sibHist))
-                case (None, None) => Option.empty
-                case (Some(_), None) | (None, Some(_)) => throw new GBDTException(
-                  "Histograms of parent's and sibling's do not present together")
-              }
-              histograms += hist
+      if (storedNodeHists.contains(parentNid) && storedNodeHists.contains(siblingNid)) {
+        partitions.foreachPartition(iter => {
+          val startTime = System.currentTimeMillis()
+          val partition = iter.next()
+          val partId = partition._1
+          val nodeHists = GBDTTrainer.nodeHists(partId)
+          val parHist = nodeHists(parentNid)
+          val sibHist = nodeHists(siblingNid)
+          val numSampledFeats = partition._2.length
+          require(parHist.length == numSampledFeats && sibHist.length == numSampledFeats)
+          for (i <- 0 until numSampledFeats) {
+            if (parHist(i).isDefined && sibHist(i).isDefined) {
+              parHist(i).get.subtractBy(sibHist(i).get)
+            } else if (parHist(i).isDefined || sibHist(i).isDefined) {
+              throw new GBDTException("Histograms of parent's and sibling's do not present together")
             }
-            require(!parIter.hasNext && !sibIter.hasNext)
-            LOG.info(s"Part[$partId] build histogram for node[$nid] cost " +
-              s"${System.currentTimeMillis() - startTime} ms")
-            histograms.iterator
           }
-        ).persist()
-        resultRdd.count()
-        parHistRdd.unpersist()
-        nodeHists -= parentNid
+          nodeHists -= parentNid
+          nodeHists += nid -> parHist
+          LOG.info(s"Part[$partId] build histogram for node[$nid] cost " +
+            s"${System.currentTimeMillis() - startTime} ms")
+        })
+        storedNodeHists -= parentNid
+        canSubtract = true
       }
     }
     // 2. calculate from data
-    if (resultRdd == null) {
+    if (!canSubtract) {
       val bcFeatureEdges = this.bcFeatureEdges
       val bcFeatureInfo = this.bcFeatureInfo
       val bcSumGradPair = spark.sparkContext.broadcast(
         forest.last.getNode(nid).getSumGradPair)
-      resultRdd = partitions.zipPartitions(trainData, preservesPartitioning = true)(
+      partitions.zipPartitions(trainData, preservesPartitioning = true)(
         (iter, featRowIter) => {
           val startTime = System.currentTimeMillis()
           val partition = iter.next()
@@ -451,19 +458,18 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           val featureRows = featRowIter.toArray
           val featureInfo = bcFeatureInfo.value
           val dataInfo = partition._3
-          val targetNid = nid
           val sumGradPair = bcSumGradPair.value
           val histBuilder = new HistBuilder(bcParam.value)
           val histograms = histBuilder.buildHistograms(sampledFeats, featLo,
-            featureRows, featureInfo, dataInfo, targetNid, sumGradPair)
-          LOG.info(s"Part[$partId] build histogram for node[$targetNid] " +
+            featureRows, featureInfo, dataInfo, nid, sumGradPair)
+          GBDTTrainer.nodeHists(partId) += nid -> histograms
+          LOG.info(s"Part[$partId] build histogram for node[$nid] " +
             s"cost ${System.currentTimeMillis() - startTime} ms")
-          histograms.iterator
+          Seq.empty.iterator
         }
-      ).persist()
-      resultRdd.count()
+      ).count()
     }
-    nodeHists += nid -> resultRdd
+    storedNodeHists += nid
     toFind += nid
     LOG.info(s"Build histogram for node[$nid] cost ${System.currentTimeMillis() - startTime} ms")
   }
@@ -481,44 +487,26 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     val startTime = System.currentTimeMillis()
     val nodeGain = this.forest.last.getNode(nid).calcGain(param)
     val bcNodeGain = spark.sparkContext.broadcast(nodeGain)
-    val nodeHist = this.nodeHists(nid)
     val bcSumGradPair = spark.sparkContext.broadcast(
       forest.last.getNode(nid).getSumGradPair)
     val bcFeatureInfo = this.bcFeatureInfo
-    val globalBest = partitions.zipPartitions(nodeHist, preservesPartitioning = true)(
-      (iter, histIter) => {
-        val startTime = System.currentTimeMillis()
-        val partition = iter.next()
-        val partId = partition._1
-        val sampledFeats = partition._2
-        val featureInfo = bcFeatureInfo.value
-        val sumGradPair = bcSumGradPair.value
-        val nodeGain = bcNodeGain.value
-        val splitFinder = new SplitFinder(bcParam.value)
-        val localBest = new GBTSplit()
-        var cnt = 0
-        while (histIter.hasNext) {
-          histIter.next() match {
-            case Some(hist) => {
-              val fid = sampledFeats(cnt)
-              val isCategorical = featureInfo.isCategorical(fid)
-              val splits = featureInfo.getSplits(fid)
-              val defaultBin = featureInfo.getDefaultBin(fid)
-              val gbtSplit = splitFinder.findBestSplitOfOneFeature(
-                fid, isCategorical, splits, defaultBin, hist, sumGradPair, nodeGain)
-              localBest.update(gbtSplit)
-            }
-            case None =>
-          }
-          cnt += 1
-        }
-        LOG.info(s"Part[$partId] find best split for node[$nid] cost " +
-          s"${System.currentTimeMillis() - startTime} ms, local best split: " +
-          s"${localBest.getSplitEntry}")
-        require(cnt == sampledFeats.length)
-        Seq(localBest).iterator
-      }
-    ).reduce((s1, s2) => {s1.update(s2); s1})
+    val globalBest = partitions.mapPartitions(iter => {
+      val startTime = System.currentTimeMillis()
+      val partition = iter.next()
+      val partId = partition._1
+      val sampledFeats = partition._2
+      val histograms = GBDTTrainer.nodeHists(partId)(nid)
+      val featureInfo = bcFeatureInfo.value
+      val sumGradPair = bcSumGradPair.value
+      val nodeGain = bcNodeGain.value
+      val splitFinder = new SplitFinder(bcParam.value)
+      val localBest = splitFinder.findBestSplit(sampledFeats,
+        histograms, featureInfo, sumGradPair, nodeGain)
+      LOG.info(s"Part[$partId] find best split for node[$nid] cost " +
+        s"${System.currentTimeMillis() - startTime} ms, local best split: " +
+        s"${localBest.getSplitEntry}")
+      Seq(localBest).iterator
+    }).reduce((s1, s2) => {s1.update(s2); s1})
     LOG.info(s"Find best split for node[$nid] cost ${System.currentTimeMillis() - startTime} ms, " +
       s"global best split: ${globalBest.getSplitEntry}")
     toSplit += nid -> globalBest
@@ -659,7 +647,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     toBuild.foreach(node => setNodeAsLeaf(node._1)); toBuild.clear()
     toFind.foreach(node => setNodeAsLeaf(node)); toFind.clear()
     toSplit.foreach(node => setNodeAsLeaf(node._1)); toSplit.clear()
-    nodeHists.foreach(node => node._2.unpersist()); nodeHists.clear()
+    partitions.foreachPartition(_ => GBDTTrainer.nodeHists.foreach(map => map._2.clear())); storedNodeHists.clear()
     // 2. evaluation on train data
     val bcLabels = this.bcLabels
     val metrics = partitions.mapPartitions(iterator => {

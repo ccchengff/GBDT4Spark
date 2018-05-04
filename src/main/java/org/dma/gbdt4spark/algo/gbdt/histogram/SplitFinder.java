@@ -1,5 +1,6 @@
 package org.dma.gbdt4spark.algo.gbdt.histogram;
 
+import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo;
 import org.dma.gbdt4spark.algo.gbdt.tree.GBTSplit;
 import org.dma.gbdt4spark.tree.param.GBDTParam;
 import org.dma.gbdt4spark.tree.split.SplitPoint;
@@ -7,6 +8,7 @@ import org.dma.gbdt4spark.tree.split.SplitSet;
 import org.dma.gbdt4spark.util.Maths;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import scala.Option;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -20,33 +22,34 @@ public class SplitFinder {
         this.param = param;
     }
 
-    public GBTSplit findBestSplit(int[] fset, float[][] splits, Histogram[] histograms,
-                                  GradPair sumGradPair, float nodeGain) {
+    public GBTSplit findBestSplit(int[] sampledFeats, Option<Histogram>[] histograms,
+                                  FeatureInfo featureInfo, GradPair sumGradPair, float nodeGain) {
         GBTSplit bestSplit = new GBTSplit();
-        for (int i = 0; i < fset.length; i++) {
-            int fid = fset[i];
-            Histogram hist = histograms[i];
-            GBTSplit gbtSplit = findBestSplitOfOneFeature(fid,
-                    false, splits[fid], 0,
-                    hist, sumGradPair, nodeGain);
-            bestSplit.update(gbtSplit);
+        for (int i = 0; i < sampledFeats.length; i++) {
+            if (histograms[i].isDefined()) {
+                Histogram histogram = histograms[i].get();
+                int fid = sampledFeats[i];
+                boolean isCategorical = featureInfo.isCategorical(fid);
+                float[] splits = featureInfo.getSplits(fid);
+                int defaultBin = featureInfo.getDefaultBin(fid);
+                GBTSplit curSplit = findBestSplitOfOneFeature(fid, isCategorical,
+                        splits, defaultBin, histogram, sumGradPair, nodeGain);
+                bestSplit.update(curSplit);
+            }
         }
         return bestSplit;
     }
 
-    // TODO: use more schema on default bin
     public GBTSplit findBestSplitOfOneFeature(int fid, boolean isCategorical, float[] splits, int defaultBin,
                                               Histogram histogram, GradPair sumGradPair, float nodeGain) {
         if (isCategorical) {
             return findBestSplitSet(fid, splits, defaultBin, histogram, sumGradPair, nodeGain);
         } else {
             return findBestSplitPoint(fid, splits, defaultBin, histogram, sumGradPair, nodeGain);
-            //GBTSplit splitPoint = findBestSplitPoint(fid, splits, histogram, sumGradPair, nodeGain);
-            //GBTSplit splitSet = findBestSplitSet(fid, splits, histogram, sumGradPair, nodeGain);
-            //return splitPoint.needReplace(splitSet) ? splitSet : splitPoint;
         }
     }
 
+    // TODO: use more schema on default bin
     private GBTSplit findBestSplitPoint(int fid, float[] splits, int defaultBin, Histogram histogram,
                                         GradPair sumGradPair, float nodeGain) {
         SplitPoint splitPoint = new SplitPoint();
