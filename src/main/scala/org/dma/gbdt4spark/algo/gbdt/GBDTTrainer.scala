@@ -159,11 +159,8 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
         c1
       }
     ).map(_.getQuantiles(bcParam.value.numSplit))
-    // 4.3. generate feature info
-    val isCategorical = Array.fill[Boolean](bcParam.value.numFeature)(false)
-    val featureInfo = FeatureInfo(isCategorical, splits)
-    // 4.4. broadcast feature info
-    val bcFeatureInfo = spark.sparkContext.broadcast(featureInfo)
+    // 4.3. generate feature info and broadcast
+    val bcFeatureInfo = spark.sparkContext.broadcast(FeatureInfo(param, splits))
     // 5. transpose instances
     // 5.1. map feature values into bin indexes and transpose local data
     val mediumFeatRowRdd = oriTrainData.mapPartitionsWithIndex((partId, iterator) => {

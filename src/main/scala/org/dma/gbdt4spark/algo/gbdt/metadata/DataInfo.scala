@@ -4,10 +4,10 @@ import java.util
 
 import org.dma.gbdt4spark.algo.gbdt.histogram.{BinaryGradPair, GradPair, MultiGradPair}
 import org.dma.gbdt4spark.data.FeatureRow
-import org.dma.gbdt4spark.objective.loss.{Loss, BinaryLoss, MultiLoss}
+import org.dma.gbdt4spark.objective.loss.{BinaryLoss, Loss, MultiLoss}
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.tree.split.SplitEntry
-import org.dma.gbdt4spark.util.RangeBitSet
+import org.dma.gbdt4spark.util.{Maths, RangeBitSet}
 
 object DataInfo {
   def apply(param: GBDTParam, numData: Int): DataInfo = {
@@ -15,8 +15,9 @@ object DataInfo {
     val predictions = new Array[Float](size)
     val weights = Array.fill[Float](numData)(1.0f)
     val gradParis = new Array[GradPair](numData)
-    val nodePosStart = new Array[Int](param.maxNodeNum)
-    val nodePosEnd = new Array[Int](param.maxNodeNum)
+    val maxNodeNum = Maths.pow(2, param.maxDepth + 1) - 1
+    val nodePosStart = new Array[Int](maxNodeNum)
+    val nodePosEnd = new Array[Int](maxNodeNum)
     val nodeToIns = new Array[Int](numData)
     val insPos = new Array[Int](numData)
     new DataInfo(predictions, weights, gradParis, nodePosStart, nodePosEnd, nodeToIns, insPos)

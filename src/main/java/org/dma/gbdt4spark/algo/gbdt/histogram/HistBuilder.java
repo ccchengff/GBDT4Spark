@@ -88,24 +88,28 @@ public class HistBuilder {
                     int[] indices = featRow.indices();
                     int[] bins = featRow.bins();
                     int nnz = indices.length;
-                    // 1. allocate histogram
-                    int numBin = featureInfo.getNumBin(fid);
-                    Histogram hist = new Histogram(numBin, param.numClass, param.fullHessian);
-                    // 2. loop non-zero instances, accumulate to histogram
-                    // TODO binary search
-                    for (int j = 0; j < nnz; j++) {
-                        int insId = indices[j];
-                        if (nodeStart <= insPos[insId] && insPos[insId] <= nodeEnd) {
-                            int binId = bins[j];
-                            hist.accumulate(binId, gradPairs[insId]);
+                    if (nnz != 0) {
+                        // 1. allocate histogram
+                        int numBin = featureInfo.getNumBin(fid);
+                        Histogram hist = new Histogram(numBin, param.numClass, param.fullHessian);
+                        // 2. loop non-zero instances, accumulate to histogram
+                        // TODO binary search
+                        for (int j = 0; j < nnz; j++) {
+                            int insId = indices[j];
+                            if (nodeStart <= insPos[insId] && insPos[insId] <= nodeEnd) {
+                                int binId = bins[j];
+                                hist.accumulate(binId, gradPairs[insId]);
+                            }
                         }
+                        // 3. add remaining grad and hess to default bin
+                        GradPair taken = hist.sum();
+                        GradPair remain = sumGradPair.subtract(taken);
+                        int defaultBin = featureInfo.getDefaultBin(fid);
+                        hist.accumulate(defaultBin, remain);
+                        histograms[i] = Option.apply(hist);
+                    } else {
+                        histograms[i] = Option.empty();
                     }
-                    // 3. add remaining grad and hess to default bin
-                    GradPair taken = hist.sum();
-                    GradPair remain = sumGradPair.subtract(taken);
-                    int defaultBin = featureInfo.getDefaultBin(fid);
-                    hist.accumulate(defaultBin, remain);
-                    histograms[i] = Option.apply(hist);
                 } else {
                     histograms[i] = Option.empty();
                 }
