@@ -28,6 +28,10 @@ public class Global {
         public static final String ML_GBDT_MAX_DEPTH = "spark.gbdt.max.depth";
         public static final int DEFAULT_ML_GBDT_MAX_DEPTH = 6;
         public static final String ML_GBDT_MAX_NODE_NUM = "spark.gbdt.max.node.num";
+        public static final String ML_GBDT_HIST_SUBTRACTION = "spark.gbdt.hist.subtraction";
+        public static final boolean DEFAULT_ML_GBDT_HIST_SUBTRACTION = true;
+        public static final String ML_GBDT_LIGHTER_CHILD_FIRST = "spark.gbdt.lighter.child.first";
+        public static final boolean DEFAULT_ML_GBDT_LIGHTER_CHILD_FIRST = true;
         public static final String ML_GBDT_FULL_HESSIAN = "spark.gbdt.full.hessian";
         public static final boolean DEFAULT_ML_GBDT_FULL_HESSIAN = false;
         public static final String ML_GBDT_MIN_CHILD_WEIGHT = "spark.gbdt.min.child.weight";

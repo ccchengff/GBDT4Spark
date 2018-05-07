@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.Option;
 
+import java.util.Arrays;
 import java.util.concurrent.*;
 
 public class HistBuilder {
@@ -23,24 +24,19 @@ public class HistBuilder {
                                                FeatureInfo featureInfo, DataInfo dataInfo,
                                                int nid, GradPair sumGradPair) throws Exception {
         Option<Histogram>[] histograms = new Option[sampleFeats.length];
-        int nodeStart = dataInfo.getNodePosStart(nid);
-        int nodeEnd = dataInfo.getNodePosEnd(nid);
-        int[] insPos = dataInfo.insPos();
-        GradPair[] gradPairs = dataInfo.gradPairs();
         if (param.numThread > 1) {
             ExecutorService threadPool = Executors.newFixedThreadPool(param.numThread);
             Future[] futures = new Future[param.numThread];
             for (int threadId = 0; threadId < param.numThread; threadId++) {
                 futures[threadId] = threadPool.submit(new BuilderThread(threadId, sampleFeats, featLo,
-                        featureRows, featureInfo, nodeStart, nodeEnd, insPos,
-                        gradPairs, sumGradPair, histograms));
+                        featureRows, featureInfo, dataInfo, nid, sumGradPair, histograms));
             }
             threadPool.shutdown();
             for (Future future : futures)
                 future.get();
         } else {
             new BuilderThread(0, sampleFeats, featLo, featureRows, featureInfo,
-                    nodeStart, nodeEnd, insPos, gradPairs, sumGradPair, histograms).call();
+                    dataInfo, nid, sumGradPair, histograms).call();
         }
         return histograms;
     }
@@ -53,6 +49,7 @@ public class HistBuilder {
         private final FeatureInfo featureInfo;
         private final int nodeStart;
         private final int nodeEnd;
+        private final int[] nodeToIns;
         private final int[] insPos;
         private final GradPair[] gradPairs;
         private final GradPair sumGradPair;
@@ -60,17 +57,18 @@ public class HistBuilder {
 
         private BuilderThread(int threadId, int[] sampleFeats, int featLo,
                               Option<FeatureRow>[] featureRows, FeatureInfo featureInfo,
-                              int nodeStart, int nodeEnd, int[] insPos, GradPair[] gradPairs,
-                              GradPair sumGradPair, Option<Histogram>[] histograms) {
+                              DataInfo dataInfo, int nid, GradPair sumGradPair,
+                              Option<Histogram>[] histograms) {
             this.threadId = threadId;
             this.sampleFeats = sampleFeats;
             this.featLo = featLo;
             this.featureRows = featureRows;
             this.featureInfo = featureInfo;
-            this.nodeStart = nodeStart;
-            this.nodeEnd = nodeEnd;
-            this.insPos = insPos;
-            this.gradPairs = gradPairs;
+            this.nodeStart = dataInfo.getNodePosStart(nid);
+            this.nodeEnd = dataInfo.getNodePosEnd(nid);
+            this.nodeToIns = dataInfo.nodeToIns();
+            this.insPos = dataInfo.insPos();
+            this.gradPairs = dataInfo.gradPairs();
             this.sumGradPair = sumGradPair;
             this.histograms = histograms;
         }
@@ -93,12 +91,22 @@ public class HistBuilder {
                         int numBin = featureInfo.getNumBin(fid);
                         Histogram hist = new Histogram(numBin, param.numClass, param.fullHessian);
                         // 2. loop non-zero instances, accumulate to histogram
-                        // TODO binary search
-                        for (int j = 0; j < nnz; j++) {
-                            int insId = indices[j];
-                            if (nodeStart <= insPos[insId] && insPos[insId] <= nodeEnd) {
-                                int binId = bins[j];
-                                hist.accumulate(binId, gradPairs[insId]);
+                        if (nnz <= nodeEnd - nodeStart + 1) { // loop all nnz of current feature
+                            for (int j = 0; j < nnz; j++) {
+                                int insId = indices[j];
+                                if (nodeStart <= insPos[insId] && insPos[insId] <= nodeEnd) {
+                                    int binId = bins[j];
+                                    hist.accumulate(binId, gradPairs[insId]);
+                                }
+                            }
+                        } else { // for all instance on this node, binary search in feature row
+                            for (int j = nodeStart; j <= nodeEnd; j++) {
+                                int insId = nodeToIns[j];
+                                int index = Arrays.binarySearch(indices, insId);
+                                if (index >= 0) {
+                                    int binId = bins[index];
+                                    hist.accumulate(binId, gradPairs[insId]);
+                                }
                             }
                         }
                         // 3. add remaining grad and hess to default bin

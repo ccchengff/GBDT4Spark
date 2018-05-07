@@ -390,14 +390,19 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
         if (toBuild.contains(nid)) {
           val siblingNid = Maths.sibling(nid)
           require(toBuild.contains(siblingNid))
-          val mySize = node._2
-          val siblingSize = toBuild(siblingNid)
-          if (mySize < siblingSize) {
-            buildHistogram(nid)
-            buildHistogram(siblingNid)
+          if (param.lighterChildFirst) {
+            val mySize = node._2
+            val siblingSize = toBuild(siblingNid)
+            if (mySize < siblingSize) {
+              buildHistogram(nid)
+              buildHistogram(siblingNid)
+            } else {
+              buildHistogram(siblingNid)
+              buildHistogram(nid)
+            }
           } else {
-            buildHistogram(siblingNid)
-            buildHistogram(nid)
+            buildHistogram(nid min siblingNid)
+            buildHistogram(nid max siblingNid)
           }
           toBuild -= nid
           toBuild -= siblingNid
@@ -413,7 +418,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
 
     // 1. calculate from subtraction
     var canSubtract = false
-    if (nid != 0) {
+    if (nid != 0 && param.histSubtraction) {
       val parentNid = Maths.parent(nid)
       val siblingNid = Maths.sibling(nid)
       if (storedNodeHists.contains(parentNid) && storedNodeHists.contains(siblingNid)) {
@@ -505,6 +510,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
       LOG.info(s"Part[$partId] find best split for node[$nid] cost " +
         s"${System.currentTimeMillis() - startTime} ms, local best split: " +
         s"${localBest.getSplitEntry}")
+      if (!bcParam.value.histSubtraction) GBDTTrainer.nodeHists(partId) -= nid
       Seq(localBest).iterator
     }).reduce((s1, s2) => {s1.update(s2); s1})
     LOG.info(s"Find best split for node[$nid] cost ${System.currentTimeMillis() - startTime} ms, " +
@@ -663,8 +669,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
       LOG.info(s"Part[$partId] evaluation on train data: $metricMsg")
       Seq(metrics).iterator
     })
-    metrics.count()
-    val metricMsg = metrics.take(1)(0).map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
+    val metricMsg = metrics.take(param.numWorker)(0).map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
     LOG.info(s"Evaluation on train data after ${forest.size} tree(s): $metricMsg")
     // 3. TODO: update valid data preds and evaluate
     //
