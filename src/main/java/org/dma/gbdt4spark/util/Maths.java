@@ -116,7 +116,26 @@ public class Maths {
             return pow(a * a, b / 2); // even a=(a^2)^b/2
         else
             return a * pow(a * a, b / 2); // odd a=a*(a^2)^b/2
+    }
 
+    public static float[] unique(float[] array) {
+        int cnt = 1;
+        for (int i = 1; i < array.length; i++) {
+            if (array[i] != array[i - 1])
+                cnt++;
+        }
+        if (cnt != array.length) {
+            float[] res = new float[cnt];
+            res[0] = array[0];
+            int index = 1;
+            for (int i = 1; i < array.length; i++) {
+                if (array[i] != array[i - 1])
+                    res[index++] = array[i];
+            }
+            return res;
+        } else {
+            return array;
+        }
     }
 
     public static void shuffle(int[] array) {

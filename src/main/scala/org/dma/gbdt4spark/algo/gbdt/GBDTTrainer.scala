@@ -85,15 +85,17 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     val loadStart = System.currentTimeMillis()
     // 1. load original data, split into train data and valid data
     val dim = param.numFeature
-    val dataset = spark.sparkContext.textFile(input)
+    val fullDataset = spark.sparkContext.textFile(input)
       .map(_.trim)
       .filter(_.nonEmpty)
       .map(line => DataLoader.parseLibsvm(line, dim))
-      .randomSplit(Array[Double](1.0 - validRatio, validRatio))
+      .persist(StorageLevel.MEMORY_AND_DISK)
+    val dataset = fullDataset.randomSplit(Array[Double](1.0 - validRatio, validRatio))
     val oriTrainData = dataset(0).persist(StorageLevel.MEMORY_AND_DISK)
     val validData = dataset(1).persist(StorageLevel.MEMORY_AND_DISK)
     val bcNumTrainData = spark.sparkContext.broadcast(oriTrainData.count().toInt)
     val bcNumValidData = spark.sparkContext.broadcast(validData.count().toInt)
+    fullDataset.unpersist()
     LOG.info(s"Load data cost ${System.currentTimeMillis() - loadStart} ms, " +
       s"${bcNumTrainData.value} train data, ${bcNumValidData.value} valid data")
     // start to transpose train data
@@ -139,31 +141,46 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     // 3.3. broadcast labels
     val bcLabels = spark.sparkContext.broadcast(labels)
     // 4. generate candidate splits for each feature
-    // TODO: support discrete value features
+    val evenPartitioner = new EvenPartitioner(param.numFeature, param.numWorker)
+    val bcFeatureEdges = spark.sparkContext.broadcast(evenPartitioner.partitionEdges())
     // 4.1. create local quantile sketches on each partition
-    val qSketchRdd = oriTrainData.mapPartitions(iterator => {
+    val localSketchRdd = oriTrainData.mapPartitions(iterator => {
       val numFeature = bcParam.value.numFeature
-      val qSketches = new Array[HeapQuantileSketch](numFeature)
+      val sketches = new Array[(Int, HeapQuantileSketch)](numFeature)
       for (fid <- 0 until numFeature)
-        qSketches(fid) = new HeapQuantileSketch()
+        sketches(fid) = (fid, new HeapQuantileSketch())
       while (iterator.hasNext)
-        iterator.next().feature.foreachActive((fid, value) => qSketches(fid).update(value.toFloat))
-      Seq(qSketches).iterator
+        iterator.next().feature.foreachActive((fid, fvalue) => sketches(fid)._2.update(fvalue.toFloat))
+      sketches.filter(!_._2.isEmpty).iterator
     })
-    // 4.2. merge as global quantile sketches and query quantiles as candidate split points
-    val splits = qSketchRdd.aggregate(new Array[HeapQuantileSketch](bcParam.value.numFeature))(
-      seqOp = (c, v) => v,
-      combOp = (c1, c2) => {
-        val numFeature = bcParam.value.numFeature
-        for (fid <- 0 until numFeature) {
-          if (c1(fid) == null) c1(fid) = c2(fid)
-          else c1(fid).merge(c2(fid))
+    // 4.2. repartition to executors evenly and merge as global quantile sketches
+    val globalSketchRdd = localSketchRdd.repartitionAndSortWithinPartitions(evenPartitioner)
+      .mapPartitions(iterator => {
+        val splits = collection.mutable.ArrayBuffer[(Int, Array[Float])]()
+        val numSplits = bcParam.value.numSplit
+        var curFid = -1
+        var curSketch: HeapQuantileSketch = null
+        while (iterator.hasNext) {
+          val (fid, sketch) = iterator.next()
+          if (fid != curFid) {
+            if (curFid != -1) {
+              splits += ((curFid, Maths.unique(curSketch.getQuantiles(numSplits))))
+            }
+            curSketch = sketch
+            curFid = fid
+          } else {
+            curSketch.merge(sketch)
+          }
         }
-        c1
-      }
-    ).map(_.getQuantiles(bcParam.value.numSplit))
-    // 4.3. generate feature info and broadcast
-    val bcFeatureInfo = spark.sparkContext.broadcast(FeatureInfo(param, splits))
+        if (curFid != -1)
+          splits += ((curFid, Maths.unique(curSketch.getQuantiles(numSplits))))
+        splits.iterator
+      }, preservesPartitioning = true)
+    // 4.3. collect candidates splits for all features
+    val splits = new Array[Array[Float]](param.numFeature)
+    globalSketchRdd.collect().foreach(s => splits(s._1) = s._2)
+    // 4.4. generate feature info and broadcast
+    val bcFeatureInfo = spark.sparkContext.broadcast(FeatureInfo(param.numFeature, splits))
     // 5. transpose instances
     // 5.1. map feature values into bin indexes and transpose local data
     val mediumFeatRowRdd = oriTrainData.mapPartitionsWithIndex((partId, iterator) => {
@@ -200,8 +217,6 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     })
     // 5.2. repartition feature rows evenly, compact medium feature rows
     // of one feature (from different partition) into one
-    val evenPartitioner = new EvenPartitioner(param.numFeature, param.numWorker)
-    val bcFeatureEdges = spark.sparkContext.broadcast(evenPartitioner.partitionEdges())
     val trainData = mediumFeatRowRdd.repartitionAndSortWithinPartitions(evenPartitioner)
       .mapPartitionsWithIndex((partId, iterator) => {
         val featLo = bcFeatureEdges.value(partId)
