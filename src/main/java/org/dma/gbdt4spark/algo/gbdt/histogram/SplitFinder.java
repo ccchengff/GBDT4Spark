@@ -12,6 +12,10 @@ import scala.Option;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class SplitFinder {
     private static final Logger LOG = LoggerFactory.getLogger(SplitFinder.class);
@@ -22,20 +26,23 @@ public class SplitFinder {
         this.param = param;
     }
 
-    public GBTSplit findBestSplit(int[] sampledFeats, Option<Histogram>[] histograms,
-                                  FeatureInfo featureInfo, GradPair sumGradPair, float nodeGain) {
-        GBTSplit bestSplit = new GBTSplit();
-        for (int i = 0; i < sampledFeats.length; i++) {
-            if (histograms[i].isDefined()) {
-                Histogram histogram = histograms[i].get();
-                int fid = sampledFeats[i];
-                boolean isCategorical = featureInfo.isCategorical(fid);
-                float[] splits = featureInfo.getSplits(fid);
-                int defaultBin = featureInfo.getDefaultBin(fid);
-                GBTSplit curSplit = findBestSplitOfOneFeature(fid, isCategorical,
-                        splits, defaultBin, histogram, sumGradPair, nodeGain);
-                bestSplit.update(curSplit);
+    public GBTSplit findBestSplit(int[] sampledFeats, Option<Histogram>[] histograms, FeatureInfo featureInfo,
+                                  GradPair sumGradPair, float nodeGain) throws Exception {
+        GBTSplit bestSplit;
+        if (param.numThread > 1) {
+            bestSplit = new GBTSplit();
+            ExecutorService threadPool = Executors.newFixedThreadPool(param.numThread);
+            Future[] futures = new Future[param.numThread];
+            for (int threadId = 0; threadId < param.numThread; threadId++) {
+                futures[threadId] = threadPool.submit(new FinderThread(threadId,
+                        sampledFeats, histograms, featureInfo, sumGradPair, nodeGain));
             }
+            threadPool.shutdown();
+            for (Future<GBTSplit> future : futures)
+                bestSplit.update(future.get());
+        } else {
+            bestSplit = new FinderThread(0, sampledFeats, histograms,
+                    featureInfo, sumGradPair, nodeGain).call();
         }
         return bestSplit;
     }
@@ -133,4 +140,47 @@ public class SplitFinder {
             return Maths.dot(binGrad, tmp) >= 0.0f ? 0 : 1;
         }
     }
+
+    private class FinderThread implements Callable<GBTSplit> {
+        private final int threadId;
+        private final int[] sampledFeats;
+        private final Option<Histogram>[] histograms;
+        private final FeatureInfo featureInfo;
+        private final GradPair sumGradPair;
+        private final float nodeGain;
+
+        FinderThread(int threadId, int[] sampledFeats, Option<Histogram>[] histograms,
+                     FeatureInfo featureInfo, GradPair sumGradPair, float nodeGain) {
+            this.threadId = threadId;
+            this.sampledFeats = sampledFeats;
+            this.histograms = histograms;
+            this.featureInfo = featureInfo;
+            this.sumGradPair = sumGradPair;
+            this.nodeGain = nodeGain;
+        }
+
+        @Override
+        public GBTSplit call() throws Exception {
+            int avg = sampledFeats.length / param.numThread;
+            int from = threadId * avg;
+            int to = threadId + 1 == param.numThread ? histograms.length : from + avg;
+
+            GBTSplit myBestSplit = new GBTSplit();
+            for (int i = from; i < to; i++) {
+                if (histograms[i].isDefined()) {
+                    Histogram histogram = histograms[i].get();
+                    int fid = sampledFeats[i];
+                    boolean isCategorical = featureInfo.isCategorical(fid);
+                    float[] splits = featureInfo.getSplits(fid);
+                    int defaultBin = featureInfo.getDefaultBin(fid);
+                    GBTSplit curSplit = findBestSplitOfOneFeature(fid, isCategorical,
+                            splits, defaultBin, histogram, sumGradPair, nodeGain);
+                    myBestSplit.update(curSplit);
+                }
+            }
+
+            return myBestSplit;
+        }
+    }
+
 }
