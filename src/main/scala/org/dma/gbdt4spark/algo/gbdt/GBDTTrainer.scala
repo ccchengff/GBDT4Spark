@@ -361,16 +361,13 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
 
   def calcGrad(nid: Int): Unit = {
     val bcLabels = this.bcLabels
-    val sumGradPair = partitions.mapPartitions(iterator => {
+    partitions.foreachPartition(iterator => {
       val partition = iterator.next()
       val dataInfo = partition._3
       val loss = partition._4
-      val sumGradPair = dataInfo.calcGradPairs(nid, bcLabels.value, loss, bcParam.value)
-      Seq(sumGradPair).iterator
-    }, preservesPartitioning = true)
-      .treeReduce((gp1, gp2) => {gp1.plusBy(gp2); gp1})
-    sumGradPair.timesBy(1.0f / partitions.getNumPartitions)
-
+      dataInfo.calcGradPairs(nid, bcLabels.value, loss, bcParam.value)
+    })
+    val sumGradPair = partitions.map(_._3.sumGradPair(nid)).take(1)(0)
     forest.last.getNode(nid).setSumGradPair(sumGradPair)
   }
 

@@ -38,26 +38,22 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
     }
   }
 
-  def calcGradPairs(nid: Int, labels: Array[Float], loss: Loss, param: GBDTParam): GradPair = {
+  def calcGradPairs(nid: Int, labels: Array[Float], loss: Loss, param: GBDTParam): Unit = {
     val nodeStart = nodePosStart(nid)
     val nodeEnd = nodePosEnd(nid)
     val numClass = param.numClass
     if (numClass == 2) {
       // binary classification
       val binaryLoss = loss.asInstanceOf[BinaryLoss]
-      val sumGradPair = new BinaryGradPair()
       for (posId <- nodeStart to nodeEnd) {
         val insId = nodeToIns(posId)
         val grad = binaryLoss.firOrderGrad(predictions(insId), labels(insId))
         val hess = binaryLoss.secOrderGrad(predictions(insId), labels(insId), grad)
         gradPairs(insId) = new BinaryGradPair(grad, hess)
-        sumGradPair.plusBy(gradPairs(insId))
       }
-      sumGradPair
     } else if (!param.fullHessian) {
       // multi-label classification, assume hessian matrix is diagonal
       val multiLoss = loss.asInstanceOf[MultiLoss]
-      val sumGradPair = new MultiGradPair(numClass, false)
       val preds = new Array[Float](numClass)
       for (posId <- nodeStart to nodeEnd) {
         val insId = nodeToIns(posId)
@@ -65,13 +61,10 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
         val grad = multiLoss.firOrderGrad(preds, labels(insId))
         val hess = multiLoss.secOrderGradDiag(preds, labels(insId), grad)
         gradPairs(insId) = new MultiGradPair(grad, hess)
-        sumGradPair.plusBy(gradPairs(insId))
       }
-      sumGradPair
     } else {
       // multi-label classification, represent hessian matrix as lower triangular matrix
       val multiLoss = loss.asInstanceOf[MultiLoss]
-      val sumGradPair = new MultiGradPair(numClass, true)
       val preds = new Array[Float](numClass)
       for (posId <- nodeStart to nodeEnd) {
         val insId = nodeToIns(posId)
@@ -79,9 +72,7 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
         val grad = multiLoss.firOrderGrad(preds, labels(insId))
         val hess = multiLoss.secOrderGradFull(preds, labels(insId), grad)
         gradPairs(insId) = new MultiGradPair(grad, hess)
-        sumGradPair.plusBy(gradPairs(insId))
       }
-      sumGradPair
     }
   }
 
