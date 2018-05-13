@@ -108,7 +108,6 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
   }
 
   def updatePos(nid: Int, splitResult: RangeBitSet): Unit = {
-  //def updatePos(nid: Int, splitResult: RangeBitSet): (Int, Int) = {
     val nodeStart = nodePosStart(nid)
     val nodeEnd = nodePosEnd(nid)
     var left = nodeStart
@@ -136,11 +135,8 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
     }
     nodePosStart(2 * nid + 1) = nodeStart
     nodePosEnd(2 * nid + 1) = cutPos
-    val leftChildSize = cutPos - nodeStart + 1
     nodePosStart(2 * nid + 2) = cutPos + 1
     nodePosEnd(2 * nid + 2) = nodeEnd
-    val rightChildSize = nodeEnd - cutPos
-    //(leftChildSize, rightChildSize)
   }
 
   def updatePreds(nid: Int, update: Float, learningRate: Float): Unit = {

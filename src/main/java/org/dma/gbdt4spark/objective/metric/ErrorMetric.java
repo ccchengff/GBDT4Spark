@@ -16,8 +16,8 @@ public class ErrorMetric implements EvalMetric {
     }
 
     @Override
-    public float eval(float[] preds, float[] labels) {
-        float error = 0.0f;
+    public double eval(float[] preds, float[] labels) {
+        double error = 0.0;
         if (preds.length == labels.length) {
             for (int i = 0; i < preds.length; i++) {
                 error += evalOne(preds[i], labels[i]);
@@ -30,17 +30,17 @@ public class ErrorMetric implements EvalMetric {
                 error += evalOne(pred, labels[i]);
             }
         }
-        return error / labels.length;
+        return (float) (error / labels.length);
     }
 
     @Override
-    public float evalOne(float pred, float label) {
-        return pred >= 0.0f ? 1.0f - label : label;
+    public double evalOne(float pred, float label) {
+        return pred >= 0.0f ? 1.0 - label : label;
     }
 
     @Override
-    public float evalOne(float[] pred, float label) {
-        return Maths.argmax(pred) != ((int) label) ? 1.0f : 0.0f;
+    public double evalOne(float[] pred, float label) {
+        return Maths.argmax(pred) != ((int) label) ? 1 : 0;
     }
 
     public static ErrorMetric getInstance() {

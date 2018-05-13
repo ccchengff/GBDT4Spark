@@ -16,8 +16,8 @@ public class PrecisionMetric implements EvalMetric {
     }
 
     @Override
-    public float eval(float[] preds, float[] labels) {
-        float correct = 0.0f;
+    public double eval(float[] preds, float[] labels) {
+        double correct = 0.0;
         if (preds.length == labels.length) {
             for (int i = 0; i < preds.length; i++) {
                 correct += evalOne(preds[i], labels[i]);
@@ -30,17 +30,17 @@ public class PrecisionMetric implements EvalMetric {
                 correct += evalOne(pred, labels[i]);
             }
         }
-        return correct / labels.length;
+        return (float) (correct / labels.length);
     }
 
     @Override
-    public float evalOne(float pred, float label) {
-        return pred < 0.0f ? 1.0f - label : label;
+    public double evalOne(float pred, float label) {
+        return pred < 0.0f ? 1.0 - label : label;
     }
 
     @Override
-    public float evalOne(float[] pred, float label) {
-        return Maths.argmax(pred) == ((int) label) ? 1.0f : 0.0f;
+    public double evalOne(float[] pred, float label) {
+        return Maths.argmax(pred) == ((int) label) ? 1 : 0;
     }
 
     public static PrecisionMetric getInstance() {

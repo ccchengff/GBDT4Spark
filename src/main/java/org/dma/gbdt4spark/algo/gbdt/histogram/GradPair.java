@@ -11,7 +11,7 @@ public interface GradPair {
 
     GradPair subtract(GradPair gradPair);
 
-    void timesBy(float x);
+    void timesBy(double x);
 
     float calcGain(GBDTParam param);
 

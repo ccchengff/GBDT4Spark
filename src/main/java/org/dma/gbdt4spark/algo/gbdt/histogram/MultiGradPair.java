@@ -1,31 +1,32 @@
 package org.dma.gbdt4spark.algo.gbdt.histogram;
 
 import org.dma.gbdt4spark.tree.param.GBDTParam;
+import org.dma.gbdt4spark.util.Maths;
 
 import java.io.Serializable;
 import java.util.Arrays;
 
 public class MultiGradPair implements GradPair, Serializable {
-    private float[] grad;
-    private float[] hess;
+    private double[] grad;
+    private double[] hess;
 
     public MultiGradPair(int numClass, boolean fullHessian) {
-        this.grad = new float[numClass];
+        this.grad = new double[numClass];
         if (fullHessian)
-            this.hess = new float[(numClass * (numClass + 1)) >> 1];
+            this.hess = new double[(numClass * (numClass + 1)) >> 1];
         else
-            this.hess = new float[numClass];
+            this.hess = new double[numClass];
     }
 
-    public MultiGradPair(float[] grad, float[] hess) {
+    public MultiGradPair(double[] grad, double[] hess) {
         this.grad = grad;
         this.hess = hess;
     }
 
     @Override
     public void plusBy(GradPair gradPair) {
-        float[] grad = ((MultiGradPair) gradPair).grad;
-        float[] hess = ((MultiGradPair) gradPair).hess;
+        double[] grad = ((MultiGradPair) gradPair).grad;
+        double[] hess = ((MultiGradPair) gradPair).hess;
         for (int i = 0; i < this.grad.length; i++)
             this.grad[i] += grad[i];
         for (int i = 0; i < this.hess.length; i++)
@@ -34,8 +35,8 @@ public class MultiGradPair implements GradPair, Serializable {
 
     @Override
     public void subtractBy(GradPair gradPair) {
-        float[] grad = ((MultiGradPair) gradPair).grad;
-        float[] hess = ((MultiGradPair) gradPair).hess;
+        double[] grad = ((MultiGradPair) gradPair).grad;
+        double[] hess = ((MultiGradPair) gradPair).hess;
         for (int i = 0; i < this.grad.length; i++)
             this.grad[i] -= grad[i];
         for (int i = 0; i < this.hess.length; i++)
@@ -57,7 +58,7 @@ public class MultiGradPair implements GradPair, Serializable {
     }
 
     @Override
-    public void timesBy(float x) {
+    public void timesBy(double x) {
         for (int i = 0; i < this.grad.length; i++)
             this.grad[i] *= x;
         for (int i = 0; i < this.hess.length; i++)
@@ -66,11 +67,12 @@ public class MultiGradPair implements GradPair, Serializable {
 
     @Override
     public float calcGain(GBDTParam param) {
-        return param.calcGain(grad, hess);
+        return (float) param.calcGain(grad, hess);
     }
 
     public float[] calcWeights(GBDTParam param) {
-        return param.calcWeights(grad, hess);
+        //return param.calcWeights(grad, hess);
+        return Maths.doubleArrayToFloatArray(param.calcWeights(grad, hess));
     }
 
     @Override
@@ -83,11 +85,11 @@ public class MultiGradPair implements GradPair, Serializable {
         return new MultiGradPair(grad.clone(), hess.clone());
     }
 
-    public float[] getGrad() {
+    public double[] getGrad() {
         return grad;
     }
 
-    public float[] getHess() {
+    public double[] getHess() {
         return hess;
     }
 

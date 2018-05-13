@@ -717,19 +717,29 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     val bcLabels = this.bcLabels
     val startTime = System.currentTimeMillis()
     val metrics = partitions.mapPartitions(iterator => {
+      val startTime = System.currentTimeMillis()
       val partition = iterator.next()
       val partId = partition._1
-      val dataInfo = GBDTTrainer.dataInfo
-      val evalMetrics = GBDTTrainer.evalMetrics
-      val metrics = evalMetrics.map(evalMetric => {
-        val metric = evalMetric.eval(dataInfo.predictions, bcLabels.value)
-        (evalMetric.getKind, metric)
-      })
-      val metricMsg = metrics.map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
-      LOG.info(s"Part[$partId] evaluation on train data: $metricMsg")
-      Seq(metrics).iterator
+      val localPartId = partition._2
+      val metrics = GBDTTrainer.sync(localPartId) {
+        val dataInfo = GBDTTrainer.dataInfo
+        val evalMetrics = GBDTTrainer.evalMetrics
+        evalMetrics.map(evalMetric => {
+          val metric = evalMetric.eval(dataInfo.predictions, bcLabels.value)
+          (evalMetric.getKind, metric)
+        })
+      }
+      LOG.info(s"Part[$partId] evaluation on train data cost " +
+        s"${System.currentTimeMillis() - startTime} ms")
+      if (metrics != null) {
+        val metricMsg = metrics.map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
+        LOG.info(s"Part[$partId] evaluation metrics on train data: $metricMsg")
+        Seq(metrics).iterator
+      } else {
+        Seq.empty.iterator
+      }
     })
-    val metricMsg = metrics.take(param.numWorker)(0).map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
+    val metricMsg = metrics.collect()(0).map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
     LOG.info(s"Evaluation cost ${System.currentTimeMillis() - startTime} ms")
     LOG.info(s"Evaluation on train data after ${forest.size} tree(s): $metricMsg")
     // 3. TODO: update valid data preds and evaluate

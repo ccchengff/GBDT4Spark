@@ -5,12 +5,12 @@ import org.dma.gbdt4spark.tree.param.GBDTParam;
 import java.io.Serializable;
 
 public class BinaryGradPair implements GradPair, Serializable {
-    private float grad;
-    private float hess;
+    private double grad;
+    private double hess;
 
     public BinaryGradPair() {}
 
-    public BinaryGradPair(float grad, float hess) {
+    public BinaryGradPair(double grad, double hess) {
         this.grad = grad;
         this.hess = hess;
     }
@@ -42,18 +42,18 @@ public class BinaryGradPair implements GradPair, Serializable {
     }
 
     @Override
-    public void timesBy(float x) {
+    public void timesBy(double x) {
         this.grad *= x;
         this.hess *= x;
     }
 
     @Override
     public float calcGain(GBDTParam param) {
-        return param.calcGain(grad, hess);
+        return (float) param.calcGain(grad, hess);
     }
 
     public float calcWeight(GBDTParam param) {
-        return param.calcWeight(grad, hess);
+        return (float) param.calcWeight(grad, hess);
     }
 
     @Override
@@ -66,11 +66,11 @@ public class BinaryGradPair implements GradPair, Serializable {
         return new BinaryGradPair(grad, hess);
     }
 
-    public float getGrad() {
+    public double getGrad() {
         return grad;
     }
 
-    public float getHess() {
+    public double getHess() {
         return hess;
     }
 

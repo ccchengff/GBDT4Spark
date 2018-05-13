@@ -26,7 +26,7 @@ public class GBDTParam extends RegTParam {
      * @param sumHess sum of hessian values
      * @return true if satisfied, false otherwise
      */
-    public boolean satisfyWeight(float sumHess) {
+    public boolean satisfyWeight(double sumHess) {
         return sumHess >= minChildWeight;
     }
 
@@ -38,11 +38,11 @@ public class GBDTParam extends RegTParam {
      * @param sumHess sum of hessian values
      * @return true if satisfied, false otherwise
      */
-    public boolean satisfyWeight(float[] sumHess) {
+    public boolean satisfyWeight(double[] sumHess) {
         if (minChildWeight == 0.0f) return true;
-        float w = 1.0f;
+        double w = 1.0;
         if (!fullHessian) {
-            for (float h : sumHess) w *= h;
+            for (double h : sumHess) w *= h;
         } else {
             for (int k = 0; k < numClass; k++) {
                 int index = Maths.indexOfLowerTriangularMatrix(k, k);
@@ -59,11 +59,11 @@ public class GBDTParam extends RegTParam {
      * @param sumHess sum of hessian values
      * @return weight
      */
-    public float calcWeight(float sumGrad, float sumHess) {
-        if (!satisfyWeight(sumHess) || sumGrad == 0.0f) {
-            return 0.0f;
+    public double calcWeight(double sumGrad, double sumHess) {
+        if (!satisfyWeight(sumHess) || sumGrad == 0.0) {
+            return 0.0;
         }
-        float dw;
+        double dw;
         if (regAlpha == 0.0f) {
             dw = -sumGrad / (sumHess + regLambda);
         } else {
@@ -79,8 +79,8 @@ public class GBDTParam extends RegTParam {
         return dw;
     }
 
-    public float[] calcWeights(float[] sumGrad, float[] sumHess) {
-        float[] weights = new float[numClass];
+    public double[] calcWeights(double[] sumGrad, double[] sumHess) {
+        double[] weights = new double[numClass];
         if (!satisfyWeight(sumHess) || Maths.areZeros(sumGrad)) {
             return weights;
         }
@@ -100,6 +100,15 @@ public class GBDTParam extends RegTParam {
                 weights[i] *= -1;
             addDiagonal(numClass, sumHess, -regLambda);
         }
+        if (maxLeafWeight != 0.0f) {
+            for (int k = 0; k < numClass; k++) {
+                if (weights[k] > maxLeafWeight) {
+                    weights[k] = maxLeafWeight;
+                } else if (weights[k] < -maxLeafWeight) {
+                    weights[k] = -maxLeafWeight;
+                }
+            }
+        }
         return weights;
     }
 
@@ -110,7 +119,7 @@ public class GBDTParam extends RegTParam {
      * @param sumHess sum of hessian values
      * @return loss gain
      */
-    public float calcGain(float sumGrad, float sumHess) {
+    public double calcGain(double sumGrad, double sumHess) {
         if (!satisfyWeight(sumHess) || sumGrad == 0.0f) {
             return 0.0f;
         }
@@ -121,20 +130,20 @@ public class GBDTParam extends RegTParam {
                 return Maths.sqr(Maths.thresholdL1(sumGrad, regAlpha)) / (sumHess + regLambda);
             }
         } else {
-            float w = calcWeight(sumGrad, sumHess);
-            float ret = sumGrad * w + 0.5f * (sumHess + regLambda) * Maths.sqr(w);
+            double w = calcWeight(sumGrad, sumHess);
+            double ret = sumGrad * w + 0.5 * (sumHess + regLambda) * Maths.sqr(w);
             if (regAlpha == 0.0f) {
-                return -2.0f * ret;
+                return -2.0 * ret;
             } else {
-                return -2.0f * (ret + regAlpha * Math.abs(w));
+                return -2.0 * (ret + regAlpha * Math.abs(w));
             }
         }
     }
 
-    public float calcGain(float[] sumGrad, float[] sumHess) {
+    public double calcGain(double[] sumGrad, double[] sumHess) {
         double gain = 0.0;
         if (!satisfyWeight(sumHess) || Maths.areZeros(sumGrad)) {
-            return 0.0f;
+            return 0.0;
         }
         // TODO: regularization
         if (!fullHessian) {
@@ -147,14 +156,14 @@ public class GBDTParam extends RegTParam {
             }
         } else {
             addDiagonal(numClass, sumHess, regLambda);
-            float[] tmp = Maths.solveLinearSystemWithCholeskyDecomposition(sumHess, sumGrad, numClass);
+            double[] tmp = Maths.solveLinearSystemWithCholeskyDecomposition(sumHess, sumGrad, numClass);
             gain = Maths.dot(sumGrad, tmp);
             addDiagonal(numClass, sumHess, -regLambda);
         }
         return (float) (gain / numClass);
     }
 
-    private void addDiagonal(int n, float[] sumHess, float v) {
+    private void addDiagonal(int n, double[] sumHess, double v) {
         for (int i = 0; i < n; i++) {
             int index = Maths.indexOfLowerTriangularMatrix(i, i);
             sumHess[index] += v;

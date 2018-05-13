@@ -23,57 +23,57 @@ public class RMSELoss implements BinaryLoss, MultiLoss {
     }
 
     @Override
-    public float firOrderGrad(float pred, float label) {
+    public double firOrderGrad(float pred, float label) {
         return pred - label;
     }
 
     @Override
-    public float secOrderGrad(float pred, float label) {
-        return 1.0f;
+    public double secOrderGrad(float pred, float label) {
+        return 1.0;
     }
 
     @Override
-    public float secOrderGrad(float pred, float label, float firGrad) {
-        return 1.0f;
+    public double secOrderGrad(float pred, float label, double firGrad) {
+        return 1.0;
     }
 
     @Override
-    public float[] firOrderGrad(float[] pred, float label) {
+    public double[] firOrderGrad(float[] pred, float label) {
         int numLabel = pred.length;
         int trueLabel = (int) label;
-        float[] grad = new float[numLabel];
+        double[] grad = new double[numLabel];
         for (int i = 0; i < numLabel; i++)
             grad[i] = pred[i] - (trueLabel == i ? 1 : 0);
         return grad;
     }
 
     @Override
-    public float[] secOrderGradDiag(float[] pred, float label) {
+    public double[] secOrderGradDiag(float[] pred, float label) {
         int numLabel = pred.length;
-        float[] hess = new float[numLabel];
-        Arrays.fill(hess, 1.0f);
+        double[] hess = new double[numLabel];
+        Arrays.fill(hess, 1.0);
         return hess;
     }
 
     @Override
-    public float[] secOrderGradDiag(float[] pred, float label, float[] firGrad) {
+    public double[] secOrderGradDiag(float[] pred, float label, double[] firGrad) {
         return secOrderGradDiag(pred, label);
     }
 
     @Override
-    public float[] secOrderGradFull(float[] pred, float label) {
+    public double[] secOrderGradFull(float[] pred, float label) {
         int numLabel = pred.length;
         int size = (numLabel + 1) * numLabel / 2;
-        float[] hess = new float[size];
+        double[] hess = new double[size];
         for (int i = 0; i < numLabel; i++) {
             int t = Maths.indexOfLowerTriangularMatrix(i, i);
-            hess[t] = 1.0f;
+            hess[t] = 1.0;
         }
         return hess;
     }
 
     @Override
-    public float[] secOrderGradFull(float[] pred, float label, float[] firGrad) {
+    public double[] secOrderGradFull(float[] pred, float label, double[] firGrad) {
         return secOrderGradFull(pred, label);
     }
 

@@ -1,13 +1,13 @@
 package org.dma.gbdt4spark.objective.loss;
 
 public interface MultiLoss extends Loss {
-    float[] firOrderGrad(float[] pred, float label);
+    double[] firOrderGrad(float[] pred, float label);
 
-    float[] secOrderGradDiag(float[] pred, float label);
+    double[] secOrderGradDiag(float[] pred, float label);
 
-    float[] secOrderGradDiag(float[] pred, float label, float[] firGrad);
+    double[] secOrderGradDiag(float[] pred, float label, double[] firGrad);
 
-    float[] secOrderGradFull(float[] pred, float label);
+    double[] secOrderGradFull(float[] pred, float label);
 
-    float[] secOrderGradFull(float[] pred, float label, float[] firGrad);
+    double[] secOrderGradFull(float[] pred, float label, double[] firGrad);
 }

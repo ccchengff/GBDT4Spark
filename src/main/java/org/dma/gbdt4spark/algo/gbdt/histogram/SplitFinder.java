@@ -125,19 +125,19 @@ public class SplitFinder {
 
     private int binFlowTo(GradPair sumGradPair, GradPair leftStat, GradPair binGradPair) {
         if (param.numClass == 2) {
-            float sumGrad = ((BinaryGradPair) sumGradPair).getGrad();
-            float leftGrad = ((BinaryGradPair) leftStat).getGrad();
-            float binGrad = ((BinaryGradPair) binGradPair).getGrad();
-            return binGrad * (2 * leftGrad + binGrad - sumGrad) >= 0.0f ? 0 : 1;
+            double sumGrad = ((BinaryGradPair) sumGradPair).getGrad();
+            double leftGrad = ((BinaryGradPair) leftStat).getGrad();
+            double binGrad = ((BinaryGradPair) binGradPair).getGrad();
+            return binGrad * (2 * leftGrad + binGrad - sumGrad) >= 0.0 ? 0 : 1;
         } else {
-            float[] sumGrad = ((MultiGradPair) sumGradPair).getGrad();
-            float[] leftGrad = ((MultiGradPair) leftStat).getGrad();
-            float[] binGrad = ((MultiGradPair) binGradPair).getGrad();
-            float[] tmp = new float[param.numClass];
+            double[] sumGrad = ((MultiGradPair) sumGradPair).getGrad();
+            double[] leftGrad = ((MultiGradPair) leftStat).getGrad();
+            double[] binGrad = ((MultiGradPair) binGradPair).getGrad();
+            double[] tmp = new double[param.numClass];
             for (int i = 0; i < param.numClass; i++) {
                 tmp[i] = 2 * leftGrad[i] + binGrad[i] - sumGrad[i];
             }
-            return Maths.dot(binGrad, tmp) >= 0.0f ? 0 : 1;
+            return Maths.dot(binGrad, tmp) >= 0.0 ? 0 : 1;
         }
     }
 

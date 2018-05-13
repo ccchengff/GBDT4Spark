@@ -3,11 +3,11 @@ package org.dma.gbdt4spark.objective.metric;
 public interface EvalMetric {
     Kind getKind();
 
-    float eval(float[] preds, float[] labels);
+    double eval(float[] preds, float[] labels);
 
-    float evalOne(float pred, float label);
+    double evalOne(float pred, float label);
 
-    float evalOne(float[] pred, float label);
+    double evalOne(float[] pred, float label);
 
     public enum Kind {
         RMSE("rmse"),

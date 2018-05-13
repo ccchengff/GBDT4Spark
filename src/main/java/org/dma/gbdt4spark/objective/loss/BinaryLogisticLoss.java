@@ -21,20 +21,20 @@ public class BinaryLogisticLoss implements BinaryLoss {
     }
 
     @Override
-    public float firOrderGrad(float pred, float label) {
-        float prob = Maths.sigmoid(pred);
+    public double firOrderGrad(float pred, float label) {
+        double prob = Maths.sigmoid((double) pred);
         return prob - label;
     }
 
     @Override
-    public float secOrderGrad(float pred, float label) {
-        float prob = Maths.sigmoid(pred);
+    public double secOrderGrad(float pred, float label) {
+        double prob = Maths.sigmoid((double) pred);
         return Math.max(prob * (1 - prob), Maths.EPSILON);
     }
 
     @Override
-    public float secOrderGrad(float pred, float label, float firGrad) {
-        float prob = firGrad + label;
+    public double secOrderGrad(float pred, float label, double firGrad) {
+        double prob = firGrad + label;
         return Math.max(prob * (1 - prob), Maths.EPSILON);
     }
 

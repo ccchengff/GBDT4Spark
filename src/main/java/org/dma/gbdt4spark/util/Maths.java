@@ -84,6 +84,14 @@ public class Maths {
         return true;
     }
 
+    public static boolean areZeros(double[] doubles) {
+        for (double d : doubles) {
+            if (Math.abs(d) > EPSILON)
+                return false;
+        }
+        return true;
+    }
+
     public static int argmax(float[] floats) {
         int res = 0;
         float max = floats[res];
@@ -149,6 +157,20 @@ public class Maths {
         }
     }
 
+    public static double[] floatArrayToDoubleArray(float[] floats) {
+        double[] doubles = new double[floats.length];
+        for (int i = 0; i < floats.length; i++)
+            doubles[i] = floats[i];
+        return doubles;
+    }
+
+    public static float[] doubleArrayToFloatArray(double[] doubles) {
+        float[] floats = new float[doubles.length];
+        for (int i = 0; i < doubles.length; i++)
+            floats[i] = (float) doubles[i];
+        return floats;
+    }
+
     public static float[] floatListToArray(List<Float> list) {
         int size = list.size();
         float[] arr = new float[size];
@@ -197,6 +219,14 @@ public class Maths {
         return res;
     }
 
+    public static double dot(double[] a, double[] b) {
+        int dim = Math.min(a.length, b.length);
+        double res = 0.0;
+        for (int i = 0; i < dim; i++)
+            res += a[i] * b[i];
+        return res;
+    }
+
     public static int indexOfLowerTriangularMatrix(int row, int col) {
         return ((row * (row + 1)) >> 1) + col;
     }
@@ -212,16 +242,16 @@ public class Maths {
      * @param n dimension
      * @return matrix L*(L^T)
      */
-    public static float[] LLT(float[] L, int n) {
-        float[] M = new float[n * n];
+    public static double[] LLT(double[] L, int n) {
+        double[] M = new double[n * n];
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
-                float s = 0.0f;
+                double s = 0.0;
                 int rowI = indexOfLowerTriangularMatrix(i, 0);
                 int colJ = indexOfLowerTriangularMatrix(j, 0);
                 for (int k = 0; k < i + 1; k++) {
-                    float Lik = k <= i ? L[rowI + k] : 0.0f;
-                    float LTjk = k <= j ? L[colJ + k] : 0.0f;
+                    double Lik = k <= i ? L[rowI + k] : 0.0;
+                    double LTjk = k <= j ? L[colJ + k] : 0.0;
                     s += Lik * LTjk;
                 }
                 M[i * n + j] = s;
@@ -238,11 +268,11 @@ public class Maths {
      * @param n dimension
      * @return vector L*b
      */
-    public static float[] Lb(float[] L, float[] b, int n) {
-        float[] res = new float[n];
+    public static double[] Lb(double[] L, double[] b, int n) {
+        double[] res = new double[n];
         for (int i = 0; i < n; i++) {
             int rowI = indexOfLowerTriangularMatrix(i, 0);
-            float s = 0.0f;
+            double s = 0.0;
             for (int j = 0; j < i + 1; j++) {
                 s += L[rowI + j] * b[j];
             }
@@ -259,8 +289,8 @@ public class Maths {
      * @param n dimension
      * @return vector (L^T)*b
      */
-    public static float[] LTb(float[] L, float[] b, int n) {
-        float[] res = new float[n];
+    public static double[] LTb(double[] L, double[] b, int n) {
+        double[] res = new double[n];
         for (int i = 0; i < n; i++) {
             int rowI = indexOfLowerTriangularMatrix(i, 0);
             for (int j = 0; j < i + 1; j++) {
@@ -278,10 +308,10 @@ public class Maths {
      * @param n dimension
      * @return vector y
      */
-    public static float[] forwardSubstitution(float[] L, float[] b, int n) {
-        float[] y = new float[n];
+    public static double[] forwardSubstitution(double[] L, double[] b, int n) {
+        double[] y = new double[n];
         for (int i = 0; i < n; i++) {
-            float s = 0.0f;
+            double s = 0.0;
             int rowI = indexOfLowerTriangularMatrix(i, 0);
             for (int j = 0; j < i; j++) {
                 s += L[rowI + j] * y[j];
@@ -300,10 +330,10 @@ public class Maths {
      * @param n dimension
      * @return vector x
      */
-    public static float[] backwardSubstitution(float[] U, float[] y, int n) {
-        float[] x = new float[n];
+    public static double[] backwardSubstitution(double[] U, double[] y, int n) {
+        double[] x = new double[n];
         for (int i = n - 1; i >= 0; i--) {
-            float s = 0.0f;
+            double s = 0.0;
             int rowI = indexOfUpperTriangularMatrix(i, 0, n);
             for (int j = n - 1; j > i; j--) {
                 s += U[rowI + j] * x[j];
@@ -321,10 +351,10 @@ public class Maths {
      * @param n dimension
      * @return vector x
      */
-    public static float[] backwardSubstitutionL(float[] L, float[] y, int n) {
-        float[] x = new float[n];
+    public static double[] backwardSubstitutionL(double[] L, double[] y, int n) {
+        double[] x = new double[n];
         for (int i = n - 1; i >= 0; i--) {
-            float s = 0.0f;
+            double s = 0.0;
             for (int j = n - 1; j > i; j--) {
                 int index = indexOfLowerTriangularMatrix(j, i);
                 s += L[index] * x[j];
@@ -342,17 +372,17 @@ public class Maths {
      * @param n dimension
      * @return lower triangular matrix L s.t. A = L*(L^T)
      */
-    public static float[] choleskyDecomposition(float[] A, int n) {
-        float[] L = new float[A.length];
+    public static double[] choleskyDecomposition(double[] A, int n) {
+        double[] L = new double[A.length];
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < i + 1; j++) {
-                float s = 0;
+                double s = 0.0;
                 int rowI = indexOfLowerTriangularMatrix(i, 0);
                 int rowJ = indexOfLowerTriangularMatrix(j, 0);
                 for (int k = 0; k < j; k++) {
                     s += L[rowI + k] + L[rowJ + k];
                 }
-                L[rowI + j] = (i == j) ? (float) Math.sqrt(A[rowI + i] - s)
+                L[rowI + j] = (i == j) ? Math.sqrt(A[rowI + i] - s)
                         : 1.0f / L[rowJ + j] * (A[rowI + j] - s);
             }
         }
@@ -367,10 +397,10 @@ public class Maths {
      * @param n dimension
      * @return x = A^(-1)b
      */
-    public static float[] solveLinearSystemWithCholeskyDecomposition(float[] A, float[] b, int n) {
-        float[] L = choleskyDecomposition(A, n);
-        float[] y = forwardSubstitution(L, b, n);
-        float[] x = backwardSubstitutionL(L, y, n);
+    public static double[] solveLinearSystemWithCholeskyDecomposition(double[] A, double[] b, int n) {
+        double[] L = choleskyDecomposition(A, n);
+        double[] y = forwardSubstitution(L, b, n);
+        double[] x = backwardSubstitutionL(L, y, n);
         return x;
     }
 }

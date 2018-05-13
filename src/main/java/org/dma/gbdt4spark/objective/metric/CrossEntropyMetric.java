@@ -18,11 +18,11 @@ public class CrossEntropyMetric implements EvalMetric {
     }
 
     @Override
-    public float eval(float[] preds, float[] labels) {
+    public double eval(float[] preds, float[] labels) {
         Preconditions.checkArgument(preds.length != labels.length
                         && preds.length % labels.length == 0,
                 "CrossEntropyMetric should be used for multi-label classification");
-        float loss = 0.0f;
+        double loss = 0.0;
         int numLabel = preds.length / labels.length;
         float[] pred = new float[numLabel];
         for (int i = 0; i < labels.length; i++) {
@@ -33,18 +33,18 @@ public class CrossEntropyMetric implements EvalMetric {
     }
 
     @Override
-    public float evalOne(float pred, float label) {
+    public double evalOne(float pred, float label) {
         throw new GBDTException("CrossEntropyMetric should be used for multi-label classification");
     }
 
     @Override
-    public float evalOne(float[] pred, float label) {
-        float sum = 0.0f;
+    public double evalOne(float[] pred, float label) {
+        double sum = 0.0;
         for (float p : pred) {
             sum += Math.exp(p);
         }
-        float p = (float) Math.exp(pred[(int) label]) / sum;
-        return (float) -Math.log(Math.max(p, Maths.EPSILON));
+        double p = Math.exp(pred[(int) label]) / sum;
+        return -Math.log(Math.max(p, Maths.EPSILON));
     }
 
     public static CrossEntropyMetric getInstance() {

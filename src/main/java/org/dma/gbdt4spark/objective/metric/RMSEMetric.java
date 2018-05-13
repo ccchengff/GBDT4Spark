@@ -14,7 +14,7 @@ public class RMSEMetric implements EvalMetric {
     }
 
     @Override
-    public float eval(float[] preds, float[] labels) {
+    public double eval(float[] preds, float[] labels) {
         double errSum = 0.0f;
         if (preds.length == labels.length) {
             for (int i = 0; i < preds.length; i++) {
@@ -32,17 +32,17 @@ public class RMSEMetric implements EvalMetric {
     }
 
     @Override
-    public float evalOne(float pred, float label) {
-        float diff = pred - label;
+    public double evalOne(float pred, float label) {
+        double diff = pred - label;
         return diff * diff;
     }
 
     @Override
-    public float evalOne(float[] pred, float label) {
-        float err = 0.0f;
+    public double evalOne(float[] pred, float label) {
+        double err = 0.0;
         int trueLabel = (int) label;
         for (int i = 0; i < pred.length; i++) {
-            float diff = pred[i] - (i == trueLabel ? 1.0f : 0.0f);
+            double diff = pred[i] - (i == trueLabel ? 1 : 0);
             err += diff * diff;
         }
         return err;
