@@ -13,6 +13,7 @@ public class RangeBitSet implements Serializable {
     private int from;
     private int to;
     private int offset;
+    private int numSetTimes;
 
     public RangeBitSet(int from, int to) {
         this.from = from;
@@ -51,6 +52,7 @@ public class RangeBitSet implements Serializable {
         int x = index >> 3;
         int y = index & 0b111;
         bits[x] = (byte)(bits[x] | (1 << y));
+        numSetTimes++;
     }
 
     public void clear(int index) {
@@ -116,6 +118,10 @@ public class RangeBitSet implements Serializable {
 
     public int getRangeTo() {
         return to;
+    }
+
+    public int getNumSetTimes() {
+        return numSetTimes;
     }
 
     public int getNumValid() {

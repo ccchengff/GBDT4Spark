@@ -1,7 +1,8 @@
 package org.dma.gbdt4spark.algo.gbdt.metadata
 
 import org.dma.gbdt4spark.util.Maths
-import org.slf4j.LoggerFactory
+//import org.slf4j.LoggerFactory
+import org.dma.gbdt4spark.logging.LoggerFactory
 
 object FeatureInfo {
   private val ENUM_THRESHOLD: Int = 16

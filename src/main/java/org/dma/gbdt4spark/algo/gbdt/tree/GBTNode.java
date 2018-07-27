@@ -45,6 +45,14 @@ public class GBTNode extends TNode<GBTNodeStat> {
         return weights;
     }
 
+    public float getWeight() {
+        return weights[0];
+    }
+
+    public float[] getWeights() {
+        return weights;
+    }
+
     /*public void setGradStats(float sumGrad, float sumHess) {
         this.nodeStats[0] = new GBTNodeStat(sumGrad, sumHess);
     }

@@ -10,7 +10,7 @@ import org.dma.gbdt4spark.algo.gbdt.GBDTPhase.GBDTPhase
 import org.dma.gbdt4spark.algo.gbdt.histogram._
 import org.dma.gbdt4spark.algo.gbdt.metadata.{DataInfo, FeatureInfo}
 import org.dma.gbdt4spark.algo.gbdt.tree.{GBTNode, GBTSplit, GBTTree}
-import org.dma.gbdt4spark.data.{FeatureRow, Instance}
+import org.dma.gbdt4spark.data.{FeatureRow, Instance, InstanceRow}
 import org.dma.gbdt4spark.exception.GBDTException
 import org.dma.gbdt4spark.objective.ObjectiveFactory
 import org.dma.gbdt4spark.objective.loss.Loss
@@ -18,7 +18,10 @@ import org.dma.gbdt4spark.objective.metric.EvalMetric
 import org.dma.gbdt4spark.sketch.HeapQuantileSketch
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.util.{DataLoader, EvenPartitioner, Maths}
-import org.slf4j.LoggerFactory
+
+import scala.util.Random
+//import org.slf4j.LoggerFactory
+import org.dma.gbdt4spark.logging.LoggerFactory
 
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Sorting
@@ -47,6 +50,8 @@ object GBDTTrainer {
     }
   }
 
+  private val instanceRows: collection.mutable.Map[Int, Array[InstanceRow]] = collection.mutable.Map()
+
   private var globalClock: Int = 0
   private var workerClock: Array[Int] = _
   private var numLocalParts: Int = 0
@@ -57,6 +62,8 @@ object GBDTTrainer {
 
   type NodeHistMap = collection.mutable.Map[Int, Array[Option[Histogram]]]
   private var nodeHists: collection.mutable.Map[Int, NodeHistMap] = _
+
+  private var localBestSplits: collection.mutable.ArrayBuffer[GBTSplit] = _
 
   def sync[A](localId: Int)(f: => A): A = {
     var res: A = null.asInstanceOf[A]
@@ -164,22 +171,27 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     GBDTTrainer.ensureLabel(labels, param.numClass)
     // 3.3. broadcast labels
     val bcLabels = spark.sparkContext.broadcast(labels)
+    LOG.info(s"Collect labels cost ${System.currentTimeMillis() - transposeStart} ms")
     // 4. generate candidate splits for each feature
+    val getSplitStart = System.currentTimeMillis()
     val evenPartitioner = new EvenPartitioner(param.numFeature, param.numWorker)
     val bcFeatureEdges = spark.sparkContext.broadcast(evenPartitioner.partitionEdges())
     // 4.1. create local quantile sketches on each partition
     val localSketchRdd = oriTrainData.mapPartitions(iterator => {
+      val localSketchStart = System.currentTimeMillis()
       val numFeature = bcParam.value.numFeature
       val sketches = new Array[(Int, HeapQuantileSketch)](numFeature)
       for (fid <- 0 until numFeature)
         sketches(fid) = (fid, new HeapQuantileSketch())
       while (iterator.hasNext)
         iterator.next().feature.foreachActive((fid, fvalue) => sketches(fid)._2.update(fvalue.toFloat))
+      LOG.info(s"Create local sketches cost ${System.currentTimeMillis() - localSketchStart} ms")
       sketches.filter(!_._2.isEmpty).iterator
     })
     // 4.2. repartition to executors evenly and merge as global quantile sketches
     val globalSketchRdd = localSketchRdd.repartitionAndSortWithinPartitions(evenPartitioner)
       .mapPartitions(iterator => {
+        val mergeAndGetSplitStart = System.currentTimeMillis()
         val splits = collection.mutable.ArrayBuffer[(Int, Array[Float])]()
         val numSplits = bcParam.value.numSplit
         var curFid = -1
@@ -198,6 +210,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
         }
         if (curFid != -1)
           splits += ((curFid, Maths.unique(curSketch.getQuantiles(numSplits))))
+        LOG.info(s"Merge and get split cost ${System.currentTimeMillis() - mergeAndGetSplitStart} ms")
         splits.iterator
       }, preservesPartitioning = true)
     // 4.3. collect candidates splits for all features
@@ -205,9 +218,12 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     globalSketchRdd.collect().foreach(s => splits(s._1) = s._2)
     // 4.4. generate feature info and broadcast
     val bcFeatureInfo = spark.sparkContext.broadcast(FeatureInfo(param.numFeature, splits))
+    LOG.info(s"Get split cost ${System.currentTimeMillis() - getSplitStart} ms")
     // 5. transpose instances
+    val transposeRowStart = System.currentTimeMillis()
     // 5.1. map feature values into bin indexes and transpose local data
     val mediumFeatRowRdd = oriTrainData.mapPartitionsWithIndex((partId, iterator) => {
+      val truncateStart = System.currentTimeMillis()
       val numFeature = bcParam.value.numFeature
       val splits = bcFeatureInfo.value.splits
       val insIdLists = new Array[IntArrayList](numFeature)
@@ -237,12 +253,14 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
         }
         mediumFeatRows += mediumFeatRow
       }
+      LOG.info(s"Truncate cost ${System.currentTimeMillis() - truncateStart} ms")
       mediumFeatRows.iterator
     })
     // 5.2. repartition feature rows evenly, compact medium feature rows
     // of one feature (from different partition) into one
     val trainData = mediumFeatRowRdd.repartitionAndSortWithinPartitions(evenPartitioner)
       .mapPartitionsWithIndex((partId, iterator) => {
+        val mergeRowStart = System.currentTimeMillis()
         val featLo = bcFeatureEdges.value(partId)
         val featHi = bcFeatureEdges.value(partId + 1)
         val featureRows = new ArrayBuffer[Option[FeatureRow]](featHi - featLo)
@@ -272,11 +290,63 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           }
         }
         require(featureRows.size == featHi - featLo)
+        LOG.info(s"Merge feature rows cost ${System.currentTimeMillis() - mergeRowStart} ms")
         featureRows.iterator
       }).persist(StorageLevel.MEMORY_AND_DISK)
     require(trainData.count() == param.numFeature)
+    LOG.info(s"Transpose rows cost ${System.currentTimeMillis() - transposeRowStart} ms")
     LOG.info(s"Transpose train data cost ${System.currentTimeMillis() - transposeStart} ms, " +
       s"feature edges: [${bcFeatureEdges.value.mkString(", ")}]")
+
+    val retranStartTime = System.currentTimeMillis()
+    trainData.mapPartitionsWithIndex((partId, iterator) => {
+      val startTime = System.currentTimeMillis()
+      val n = bcNumTrainData.value
+      val nnzs = new Array[Int](n)
+      val featRows = iterator.toArray
+      //val featRows = iterator.toArray.filter(_.isDefined).map(_.get)
+      featRows.foreach(optRow => {
+        if (optRow.isDefined)
+          optRow.get.indices.foreach(insId => nnzs(insId) += 1)
+      })
+      LOG.info(s"Count nnzs cost ${System.currentTimeMillis() - startTime} ms")
+      val allocStart = System.currentTimeMillis()
+      val insRows = new Array[InstanceRow](n)
+      LOG.info(s"Alloc-1 cost ${System.currentTimeMillis() - allocStart} ms")
+      for (i <- 0 until n) {
+        if (nnzs(i) > 0) {
+          insRows(i) = InstanceRow(new Array[Int](nnzs(i)), new Array[Int](nnzs(i)))
+          nnzs(i) = 0
+        }
+      }
+      LOG.info(s"Alloc-2 cost ${System.currentTimeMillis() - allocStart} ms")
+      val tranStart = System.currentTimeMillis()
+      var fid = bcFeatureEdges.value(partId)
+      for (i <- featRows.indices) {
+        if (featRows(i).isDefined) {
+          val row = featRows(i).get
+          val indices = row.indices
+          val bins = row.bins
+          val nnz = row.size
+          for (j <- 0 until nnz) {
+            val insId = indices(j)
+            val binId = bins(j)
+            insRows(insId).indices(nnzs(insId)) = fid
+            insRows(insId).bins(nnzs(insId)) = binId
+            nnzs(insId) += 1
+          }
+        }
+        fid += 1
+        //if ((i + 1) % 1000 == 0)
+        //  LOG.info(s"Transpose ${i + 1} rows cost ${System.currentTimeMillis() - tranStart} ms")
+      }
+      LOG.info(s"Transpose cost ${System.currentTimeMillis() - tranStart} ms")
+      GBDTTrainer.synchronized {
+        GBDTTrainer.instanceRows += partId -> insRows
+      }
+      Seq.empty.iterator
+    }).count()
+    LOG.info(s"Re-transpose cost ${System.currentTimeMillis() - retranStartTime} ms")
 
     // 6. initialize an RDD to control each partition
     val partitions = trainData.mapPartitionsWithIndex((partId, _) => {
@@ -339,6 +409,8 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
         GBDTTrainer.nodeHists += partId -> collection.mutable.Map()
         if (GBDTTrainer.workerClock == null)
           GBDTTrainer.workerClock = new Array[Int](GBDTTrainer.numLocalParts)
+        if (GBDTTrainer.localBestSplits == null)
+          GBDTTrainer.localBestSplits = new ArrayBuffer[GBTSplit](GBDTTrainer.numLocalParts)
       }
     })
 
@@ -359,6 +431,18 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     }
 
     LOG.info(s"Train done, ${System.currentTimeMillis() - startTime} ms elapsed")
+
+    try {
+      validOnDriver()
+    } catch {
+      case e: Exception => {
+        e.printStackTrace()
+        LOG.info(e.toString)
+      }
+    } finally {
+      while (1 + 1 == 2) {}
+    }
+    while (1 + 1 == 2) {}
   }
 
   def createNewTree(): Unit = {
@@ -404,10 +488,15 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
       val partition = iterator.next()
       val partId = partition._1
       val localPartId = partition._2
-      GBDTTrainer.sync(localPartId) {
-        val loss = GBDTTrainer.loss
-        GBDTTrainer.dataInfo.calcGradPairs(nid, bcLabels.value, loss, bcParam.value)
-      }
+      //GBDTTrainer.sync(localPartId) {
+      //  val loss = GBDTTrainer.loss
+      //  GBDTTrainer.dataInfo.calcGradPairs(nid, bcLabels.value, loss, bcParam.value)
+      //}
+      //if (localPartId == 0)
+      //  LOG.info(s"Part[$partId] calc grad pairs cost ${System.currentTimeMillis() - startTime} ms")
+      LOG.info(s"Part[$partId] receives task to calc grad pairs for node[$nid]")
+      GBDTTrainer.dataInfo.parallelCalcGradPairs(nid, bcLabels.value, GBDTTrainer.loss,
+        bcParam.value, localPartId, GBDTTrainer.numLocalParts)
       LOG.info(s"Part[$partId] calc grad pairs cost ${System.currentTimeMillis() - startTime} ms")
     })
     val sumGradPair = partitions.map(_ => GBDTTrainer.dataInfo.sumGradPair(nid)).take(1)(0)
@@ -458,6 +547,15 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           } else {
             buildHistogram(nid min siblingNid)
             buildHistogram(nid max siblingNid)
+            //val min = nid min siblingNid
+            //val max = nid max siblingNid
+            //if (Random.nextBoolean()) {
+            //  buildHistogram(min)
+            //  buildHistogram(max)
+            //} else {
+            //  buildHistogram(max)
+            //  buildHistogram(min)
+            //}
           }
           toBuild -= nid
           toBuild -= siblingNid
@@ -513,6 +611,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           val startTime = System.currentTimeMillis()
           val partition = iter.next()
           val partId = partition._1
+          LOG.info(s"Part[$partId] receives task to build histogram for node[$nid]")
           val sampledFeats = partition._3
           val featLo = bcFeatureEdges.value(partId)
           val featureRows = featRowIter.toArray
@@ -520,8 +619,10 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           val dataInfo = GBDTTrainer.dataInfo
           val sumGradPair = bcSumGradPair.value
           val histBuilder = new HistBuilder(bcParam.value)
-          val histograms = histBuilder.buildHistograms(sampledFeats, featLo,
-            featureRows, featureInfo, dataInfo, nid, sumGradPair)
+          val histograms = histBuilder.buildHistograms2(sampledFeats, featLo,
+            featureRows, featureInfo, dataInfo, GBDTTrainer.instanceRows(partId), nid, sumGradPair)
+          //val histograms = histBuilder.buildHistograms(sampledFeats, featLo,
+          //  featureRows, featureInfo, dataInfo, nid, sumGradPair)
           GBDTTrainer.nodeHists(partId) += nid -> histograms
           LOG.info(s"Part[$partId] build histogram for node[$nid] " +
             s"cost ${System.currentTimeMillis() - startTime} ms")
@@ -554,6 +655,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
       val startTime = System.currentTimeMillis()
       val partition = iter.next()
       val partId = partition._1
+      LOG.info(s"Part[$partId] receives task to find split for node[$nid]")
       val sampledFeats = partition._3
       val histograms = GBDTTrainer.nodeHists(partId)(nid)
       val featureInfo = bcFeatureInfo.value
@@ -566,7 +668,22 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
         s"${System.currentTimeMillis() - startTime} ms, local best split: " +
         s"${localBest.getSplitEntry}")
       if (!bcParam.value.histSubtraction) GBDTTrainer.nodeHists(partId) -= nid
-      Seq(localBest).iterator
+      val localBestSplits = GBDTTrainer.localBestSplits
+      val numLocalParts = GBDTTrainer.numLocalParts
+      if (numLocalParts > 1) {
+        var res: GBTSplit = null
+        GBDTTrainer.synchronized {
+          localBestSplits += localBest
+          if (localBestSplits.size == numLocalParts) {
+            res = localBestSplits(0)
+            for (i <- 1 until numLocalParts)
+              res.update(localBestSplits(i))
+            localBestSplits.clear()
+          }
+        }
+        if (res != null) Seq(res).iterator else Seq.empty.iterator
+      } else
+        Seq(localBest).iterator
     }).reduce((s1, s2) => {s1.update(s2); s1})
     LOG.info(s"Find best split for node[$nid] cost ${System.currentTimeMillis() - startTime} ms, " +
       s"global best split: ${globalBest.getSplitEntry}")
@@ -619,6 +736,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
         val featHi = bcFeatureEdges.value(partId + 1)
         val splitFid = bcSplitFid.value
         if (featLo <= splitFid && splitFid < featHi) {
+          LOG.info(s"Part[$partId] receives task to generate split result for node[$nid]")
           val dataInfo = GBDTTrainer.dataInfo
           // get split entry
           val splitEntry = bcSplitEntry.value
@@ -643,20 +761,23 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
       }
     ).collect()
     require(splitResult.length == 1)
+    LOG.info(s"Generate split result cost ${System.currentTimeMillis() - startTime} ms")
     // 2. split node on each executor
     val bcSplitResult = spark.sparkContext.broadcast(splitResult(0))
     val childrenSizes = partitions.mapPartitions(iterator => {
       val startTime = System.currentTimeMillis()
       val partition = iterator.next()
       val partId = partition._1
+      LOG.info(s"Part[$partId] receives task to split node[$nid]")
       val localPartId = partition._2
       GBDTTrainer.sync(localPartId) {
         GBDTTrainer.dataInfo.updatePos(nid, bcSplitResult.value)
       }
       val leftSize = GBDTTrainer.dataInfo.getNodeSize(2 * nid + 1)
       val rightSize = GBDTTrainer.dataInfo.getNodeSize(2 * nid + 2)
-      LOG.info(s"Part[$partId] split node[$nid] cost " +
-        s"${System.currentTimeMillis() - startTime} ms")
+      if (localPartId == 0)
+        LOG.info(s"Part[$partId] split node[$nid] cost " +
+          s"${System.currentTimeMillis() - startTime} ms")
       Seq((leftSize, rightSize)).iterator
     }).reduce((sz1, sz2) => {
       require(sz1._1 == sz2._1 && sz1._2 == sz2._2)
@@ -729,10 +850,10 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           (evalMetric.getKind, metric)
         })
       }
-      LOG.info(s"Part[$partId] evaluation on train data cost " +
-        s"${System.currentTimeMillis() - startTime} ms")
       if (metrics != null) {
         val metricMsg = metrics.map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
+        LOG.info(s"Part[$partId] evaluation on train data cost " +
+          s"${System.currentTimeMillis() - startTime} ms")
         LOG.info(s"Part[$partId] evaluation metrics on train data: $metricMsg")
         Seq(metrics).iterator
       } else {
@@ -775,6 +896,45 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           dataInfo.updatePreds(nid, bcWeights.value, bcParam.value.learningRate)
         }
       })
+    }
+  }
+
+  def validOnDriver(): Unit = {
+    val validData = this.validData.collect()
+    val numValidData = validData.length
+    require(numValidData == this.bcNumValidData.value)
+    val C = if (bcParam.value.numClass == 2) {
+      1
+    } else {
+      bcParam.value.numClass
+    }
+    val preds = new Array[Float](numValidData * C)
+    val labels = validData.map(_.label.toFloat)
+    GBDTTrainer.loss = ObjectiveFactory.getLoss(bcParam.value.lossFunc)
+    GBDTTrainer.evalMetrics = ObjectiveFactory.getEvalMetricsOrDefault(
+      bcParam.value.evalMetrics, GBDTTrainer.loss)
+    for (i <- forest.indices) {
+      val tree = forest(i)
+      for (j <- 0 until numValidData) {
+        var node = tree.getRoot
+        while (!node.isLeaf) {
+          if (node.getSplitEntry.flowTo(validData(j).feature) == 0)
+            node = node.getLeftChild.asInstanceOf[GBTNode]
+          else
+            node = node.getRightChild.asInstanceOf[GBTNode]
+        }
+        if (C == 2) {
+          preds(j) += node.getWeight * bcParam.value.learningRate
+        } else {
+          val weights = node.getWeights
+          for (k <- 0 until C)
+            preds(j * C + k) += weights(k) * bcParam.value.learningRate
+        }
+      }
+      val metricStr = GBDTTrainer.evalMetrics
+        .map(evalMetric => (evalMetric.getKind, evalMetric.eval(preds, labels)))
+        .map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
+      LOG.info(s"Valid after tree[${i + 1}]: $metricStr")
     }
   }
 

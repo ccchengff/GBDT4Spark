@@ -157,6 +157,14 @@ public class Maths {
         }
     }
 
+    public static void reverse(int[] array, int from, int length) {
+        for (int i1 = from, i2 = from + length - 1; i1 < i2; i1++, i2--) {
+            int t = array[i1];
+            array[i1] = array[i2];
+            array[i2] = t;
+        }
+    }
+
     public static double[] floatArrayToDoubleArray(float[] floats) {
         double[] doubles = new double[floats.length];
         for (int i = 0; i < floats.length; i++)
