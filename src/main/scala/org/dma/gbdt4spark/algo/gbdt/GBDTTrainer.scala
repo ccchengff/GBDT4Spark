@@ -432,16 +432,6 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
 
     LOG.info(s"Train done, ${System.currentTimeMillis() - startTime} ms elapsed")
 
-    try {
-      validOnDriver()
-    } catch {
-      case e: Exception => {
-        e.printStackTrace()
-        LOG.info(e.toString)
-      }
-    } finally {
-      while (1 + 1 == 2) {}
-    }
     while (1 + 1 == 2) {}
   }
 
@@ -721,6 +711,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     val startTime = System.currentTimeMillis()
     val gbtSplit = toSplit(nid)
     val splitEntry = gbtSplit.getSplitEntry
+    forest.last.getNode(nid).setSplitEntry(splitEntry)
     LOG.info(s"Split node[$nid], split entry: $splitEntry")
     val bcSplitEntry = spark.sparkContext.broadcast(splitEntry)
     val bcSplitFid = spark.sparkContext.broadcast(splitEntry.getFid)
@@ -865,6 +856,15 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     LOG.info(s"Evaluation on train data after ${forest.size} tree(s): $metricMsg")
     // 3. TODO: update valid data preds and evaluate
     //
+    try {
+      validOnDriver()
+    } catch {
+      case e: Exception => {
+        e.printStackTrace()
+        LOG.info(e.toString)
+        while (1 + 1 == 2) {}
+      }
+    }
     // 4. continue
     phase = if (forest.size == param.numTree) GBDTPhase.FINISHED else GBDTPhase.NEW_TREE
   }
@@ -899,8 +899,56 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
     }
   }
 
+  @transient var validDataArr: Array[Instance] = _
+  @transient var validLabels: Array[Float] = _
+  @transient var validPreds: Array[Float] = _
+
   def validOnDriver(): Unit = {
-    val validData = this.validData.collect()
+    if (validDataArr == null) {
+      validDataArr = this.validData.collect()
+      val numValidData = validDataArr.length
+      require(numValidData == this.bcNumValidData.value)
+      validLabels = validDataArr.map(_.label.toFloat)
+      val C = if (bcParam.value.numClass == 2) {
+        1
+      } else {
+        bcParam.value.numClass
+      }
+      validPreds = new Array[Float](numValidData * C)
+      GBDTTrainer.loss = ObjectiveFactory.getLoss(bcParam.value.lossFunc)
+      GBDTTrainer.evalMetrics = ObjectiveFactory.getEvalMetricsOrDefault(
+        bcParam.value.evalMetrics, GBDTTrainer.loss)
+    }
+
+    val C = if (bcParam.value.numClass == 2) {
+      1
+    } else {
+      bcParam.value.numClass
+    }
+
+    val tree = forest.last
+    for (i <- validDataArr.indices) {
+      var node = tree.getRoot
+      while (!node.isLeaf) {
+        if (node.getSplitEntry.flowTo(validDataArr(i).feature) == 0)
+          node = node.getLeftChild.asInstanceOf[GBTNode]
+        else
+          node = node.getRightChild.asInstanceOf[GBTNode]
+      }
+      if (C == 2) {
+        validPreds(i) += node.getWeight * bcParam.value.learningRate
+      } else {
+        val weights = node.getWeights
+        for (k <- 0 until C)
+          validPreds(i * C + k) += weights(k) * bcParam.value.learningRate
+      }
+    }
+    val metricStr = GBDTTrainer.evalMetrics
+      .map(evalMetric => (evalMetric.getKind, evalMetric.eval(validPreds, validLabels)))
+      .map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
+    LOG.info(s"Valid after tree[${forest.size}]: $metricStr")
+
+    /*val validData = this.validData.collect()
     val numValidData = validData.length
     require(numValidData == this.bcNumValidData.value)
     val C = if (bcParam.value.numClass == 2) {
@@ -935,7 +983,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
         .map(evalMetric => (evalMetric.getKind, evalMetric.eval(preds, labels)))
         .map(metric => s"${metric._1}[${metric._2}]").mkString(", ")
       LOG.info(s"Valid after tree[${i + 1}]: $metricStr")
-    }
+    }*/
   }
 
 }
