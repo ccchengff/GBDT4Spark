@@ -33,6 +33,10 @@ public abstract class Tree<TParam extends TreeParam, Node extends TNode> impleme
         this.nodes.put(nid, node);
     }
 
+    public Map<Integer, Node> getNodes() {
+        return this.nodes;
+    }
+
     public int size() {
         return nodes.size();
     }

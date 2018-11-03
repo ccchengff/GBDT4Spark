@@ -61,6 +61,8 @@ object FeatureInfo {
 
 case class FeatureInfo(featTypes: Array[Boolean], numBin: Array[Int],
                        splits: Array[Array[Float]], defaultBins: Array[Int]) {
+  def nnz(fid: Int): Int = ???
+
   def isCategorical(fid: Int) = featTypes(fid)
 
   def getNumBin(fid: Int) = numBin(fid)

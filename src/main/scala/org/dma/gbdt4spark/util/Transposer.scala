@@ -1,5 +1,6 @@
 package org.dma.gbdt4spark.util
 
+import it.unimi.dsi.fastutil.bytes.ByteArrayList
 import it.unimi.dsi.fastutil.doubles.DoubleArrayList
 import it.unimi.dsi.fastutil.ints.IntArrayList
 import org.apache.spark.broadcast.Broadcast
@@ -273,4 +274,142 @@ object Transposer {
     }
   }
 
+}
+
+
+class Transposer {
+
+  @transient implicit val sc = SparkContext.getOrCreate()
+
+  def transpose(dpData: RDD[Instance], numFeature: Int, numWorker: Int,
+                numSplit: Int): (RDD[Option[FeatureRow]], Array[Float], Broadcast[FeatureInfo]) = {
+    // 1. get #instance of each partition, and calculate the offsets of instance indexes
+    val oriNumPart = dpData.getNumPartitions
+    val partNumIns = new Array[Int](oriNumPart)
+    dpData.mapPartitionsWithIndex((partId, iterator) =>
+      Iterator((partId, iterator.size)),
+      preservesPartitioning = true
+    ).collect()
+      .foreach {
+        case (partId, partSize) => partNumIns(partId) = partSize
+      }
+    val partInsIdOffset = new Array[Int](oriNumPart)
+    for (i <- 1 until oriNumPart)
+      partInsIdOffset(i) += partInsIdOffset(i - 1) + partNumIns(i - 1)
+    val bcPartInsIdOffset = sc.broadcast(partInsIdOffset)
+    // 2. collect labels of all instances
+    val labels = new Array[Float](partNumIns.sum)
+    dpData.mapPartitionsWithIndex((partId, iterator) =>
+      Iterator((partId, iterator.map(_.label.toFloat).toArray)),
+      preservesPartitioning = true
+    ).collect()
+      .foreach {
+        case (partId, partLabels) => {
+          require(partLabels.length == partNumIns(partId))
+          val offset = partInsIdOffset(partId)
+          Array.copy(partLabels, 0, labels, offset, partLabels.length)
+        }
+      }
+    // 3. generate candidate splits for each feature
+    val evenPartitioner = new EvenPartitioner(numFeature, numWorker)
+    val bcFeatureEdges = sc.broadcast(evenPartitioner.partitionEdges())
+    // 3.1. create local quantile sketches
+    val localSketchRdd = dpData.mapPartitions(iterator => {
+      val sketches = new Array[(Int, HeapQuantileSketch)](numFeature)
+      for (fid <- 0 until numFeature)
+        sketches(fid) = (fid, new HeapQuantileSketch())
+      while (iterator.hasNext)
+        iterator.next().feature.foreachActive((fid, fvalue) => sketches(fid)._2.update(fvalue.toFloat))
+      sketches.filter(!_._2.isEmpty).iterator
+    }, preservesPartitioning = true)
+    // 3.2. repartition to executors evenly and merge as global quantile sketches
+    val splitsRdd = localSketchRdd.repartitionAndSortWithinPartitions(evenPartitioner)
+      .mapPartitions(iterator => {
+        val splits = ArrayBuffer[(Int, Array[Float])]()
+        var curFid = -1
+        var curSketch = null.asInstanceOf[HeapQuantileSketch]
+        while (iterator.hasNext) {
+          val (fid, sketch) = iterator.next()
+          if (fid != curFid) {
+            if (curFid != -1)
+              splits += ((curFid, Maths.unique(curSketch.getQuantiles(numSplit))))
+            curSketch = sketch
+            curFid = fid
+          } else
+            curSketch.merge(sketch)
+        }
+        if (curFid != -1)
+          splits += ((curFid, Maths.unique(curSketch.getQuantiles(numSplit))))
+        splits.iterator
+      }, preservesPartitioning = true)
+    // 3.3. collect candidate splits for all features
+    val splits = new Array[Array[Float]](numFeature)
+    splitsRdd.collect().foreach{case (fid, fsplits) => splits(fid) = fsplits}
+    // 3.4. feature info
+    val featureInfo = FeatureInfo(numFeature, splits)
+    val bcFeatureInfo = sc.broadcast(featureInfo)
+    // 4. transpose instances
+    // 4.1. map feature values into bin indexes and transpose local data
+    val mediumFeatRowRdd = dpData.mapPartitionsWithIndex((partId, iterator) => {
+      val splits = bcFeatureInfo.value.splits
+      val insIdLists = new Array[IntArrayList](numFeature)
+      val binIdLists = new Array[ByteArrayList](numFeature)
+      for (fid <- 0 until numFeature) {
+        insIdLists(fid) = new IntArrayList()
+        binIdLists(fid) = new ByteArrayList()
+      }
+      var curInsId = bcPartInsIdOffset.value(partId)
+      while (iterator.hasNext) {
+        iterator.next().feature.foreachActive((fid, fvalue) => {
+          insIdLists(fid).add(curInsId)
+          val binId = Maths.indexOf(splits(fid), fvalue.toFloat)
+          binIdLists(fid).add((binId + Byte.MinValue).toByte)
+        })
+        curInsId += 1
+      }
+      val mediumFeatRows = new ArrayBuffer[(Int, Option[(Array[Int], Array[Byte])])](numFeature)
+      for (fid <- 0 until numFeature) {
+        val mediumFeatRow = if (insIdLists(fid).size() > 0) {
+            val featIndices = insIdLists(fid).toIntArray(null)
+            val featBins = binIdLists(fid).toByteArray(null)
+            (fid, Option((featIndices, featBins)))
+          } else {
+            (fid, Option.empty)
+          }
+        mediumFeatRows += mediumFeatRow
+      }
+      mediumFeatRows.iterator
+    })
+    // 4.2. repartition feature rows evenly, compact medium feature rows
+    // of one feature (from different partition) into one
+    val fpData = mediumFeatRowRdd.repartitionAndSortWithinPartitions(evenPartitioner)
+      .mapPartitionsWithIndex((partId, iterator) => {
+        val featLo = bcFeatureEdges.value(partId)
+        val featHi = bcFeatureEdges.value(partId + 1)
+        val featureRows = new ArrayBuffer[Option[FeatureRow]](featHi - featLo)
+        val partFeatRows = collection.mutable.ArrayBuffer[FeatureRow]()
+        var curFid = featLo
+        while (iterator.hasNext) {
+          val (fid, partFeatRow) = iterator.next()
+          val mediumFeatRow = partFeatRow match {
+            case Some((indices, bins)) => FeatureRow(indices, bins.map(_.toInt - Byte.MinValue))
+            case None => FeatureRow(null, null)
+          }
+          if (fid != curFid) {
+            featureRows += FeatureRow.compact(partFeatRows)
+            partFeatRows.clear()
+            curFid = fid
+            partFeatRows += mediumFeatRow
+          } else if (!iterator.hasNext) {
+            partFeatRows += mediumFeatRow
+            featureRows += FeatureRow.compact(partFeatRows)
+          } else {
+            partFeatRows += mediumFeatRow
+          }
+        }
+        require(featureRows.size == featHi - featLo)
+        featureRows.iterator
+      })
+    (fpData, labels, bcFeatureInfo)
+  }
 }

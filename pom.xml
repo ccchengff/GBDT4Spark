@@ -25,12 +25,6 @@
             <id>Maven2</id>
             <url>http://repo.maven.apache.org/maven2/</url>
         </repository>
-        <repository>
-            <id>twttr</id>
-            <releases><enabled>true</enabled><updatePolicy>always</updatePolicy></releases>
-            <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
-            <url>http://maven.twttr.com/</url>
-        </repository>
     </repositories>
 
     <pluginRepositories>

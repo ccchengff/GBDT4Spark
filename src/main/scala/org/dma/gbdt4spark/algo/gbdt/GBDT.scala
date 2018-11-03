@@ -36,11 +36,21 @@ object GBDT extends Serializable {
     param.regLambda = conf.getDouble(ML_GBDT_REG_LAMBDA, DEFAULT_ML_GBDT_REG_LAMBDA).toFloat max 1.0f
     param.maxLeafWeight = conf.getDouble(ML_GBDT_MAX_LEAF_WEIGHT, DEFAULT_ML_GBDT_MAX_LEAF_WEIGHT).toFloat
 
-    val trainer = new GBDTTrainer(param)
-    val input = conf.get(ML_TRAIN_DATA_PATH)
-    val validRatio = conf.getDouble(ML_VALID_DATA_RATIO, DEFAULT_ML_VALID_DATA_RATIO)
-    trainer.loadData(input, validRatio)
-    trainer.train()
+    try {
+      //val trainer = new GBDTTrainer(param)
+      import org.dma.gbdt4spark.algo.gbdt.learner.SparkFPGBDTTrainer
+      val trainer = new SparkFPGBDTTrainer(param)
+      val input = conf.get(ML_TRAIN_DATA_PATH)
+      val validRatio = conf.getDouble(ML_VALID_DATA_RATIO, DEFAULT_ML_VALID_DATA_RATIO)
+      trainer.loadData(input, validRatio)
+      trainer.train()
+    } catch {
+      case e: Exception =>
+        println(e.toString)
+        e.printStackTrace()
+    } finally {
+      // while (1 + 1 == 2) {}
+    }
 
   }
 

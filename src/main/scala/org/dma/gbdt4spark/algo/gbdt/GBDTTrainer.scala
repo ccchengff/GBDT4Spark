@@ -609,7 +609,7 @@ class GBDTTrainer(@transient val param: GBDTParam) extends Serializable {
           val dataInfo = GBDTTrainer.dataInfo
           val sumGradPair = bcSumGradPair.value
           val histBuilder = new HistBuilder(bcParam.value)
-          val histograms = histBuilder.buildHistograms2(sampledFeats, featLo,
+          val histograms = histBuilder.buildHistograms(sampledFeats, featLo,
             featureRows, featureInfo, dataInfo, GBDTTrainer.instanceRows(partId), nid, sumGradPair)
           //val histograms = histBuilder.buildHistograms(sampledFeats, featLo,
           //  featureRows, featureInfo, dataInfo, nid, sumGradPair)

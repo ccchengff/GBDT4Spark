@@ -24,9 +24,49 @@ public class HistBuilder {
         this.param = param;
     }
 
-    public Option<Histogram>[] buildHistograms2(int[] sampleFeats, int featLo, Option<FeatureRow>[] featureRows,
-                                                FeatureInfo featureInfo, DataInfo dataInfo, InstanceRow[] instanceRows,
-                                                int nid, GradPair sumGradPair) throws Exception {
+    public Option<Histogram>[] buildHistogram(int[] sampleFeats, int featLo, FeatureInfo featureInfo, DataInfo dataInfo,
+                                               InstanceRow[] instanceRows, int nid, GradPair sumGradPair) {
+        int numF = sampleFeats.length;
+        Histogram[] histograms = new Histogram[numF];
+        for (int i = 0; i < numF; i++) {
+            int fid = sampleFeats[i];
+            if (featureInfo.nnz(fid) > 0)
+                histograms[i] = new Histogram(featureInfo.getNumBin(fid),
+                        param.numClass, param.fullHessian);
+        }
+        GradPair[] gradPairs = dataInfo.gradPairs();
+        int nodeStart = dataInfo.getNodePosStart(nid);
+        int nodeEnd = dataInfo.getNodePosEnd(nid);
+        int[] nodeToPos = dataInfo.nodeToIns();
+        for (int posId = nodeStart; posId <= nodeEnd; posId++) {
+            int insId = nodeToPos[posId];
+            if (instanceRows[insId] != null) {
+                int[] indices = instanceRows[insId].indices();
+                int[] bins = instanceRows[insId].bins();
+                int nnz = indices.length;
+                for (int j = 0; j < nnz; j++) {
+                    histograms[indices[j] - featLo].accumulate(bins[j], gradPairs[insId]);
+                }
+            }
+        }
+        Option<Histogram>[] res = new Option[numF];
+        for (int i = 0; i < numF; i++) {
+            if (histograms[i] != null) {
+                GradPair taken = histograms[i].sum();
+                GradPair remain = sumGradPair.subtract(taken);
+                int defaultBin = featureInfo.getDefaultBin(featLo + i);
+                histograms[i].accumulate(defaultBin, remain);
+                res[i] = Option.apply(histograms[i]);
+            } else {
+                res[i] = Option.empty();
+            }
+        }
+        return res;
+    }
+
+    public Option<Histogram>[] buildHistograms(int[] sampleFeats, int featLo, Option<FeatureRow>[] featureRows,
+                                               FeatureInfo featureInfo, DataInfo dataInfo, InstanceRow[] instanceRows,
+                                               int nid, GradPair sumGradPair) throws Exception {
         Preconditions.checkArgument(sampleFeats.length == featureRows.length);
         int numFeat = sampleFeats.length;
         Histogram[] histograms = new Histogram[numFeat];
