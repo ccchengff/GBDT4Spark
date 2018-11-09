@@ -4,6 +4,72 @@ import java.util.List;
 import java.util.Random;
 
 public class Maths {
+    private static class FastSigmoid {
+        /*private final val MAX_SIGMOID = 8
+  private final val SIGMOID_TABLE_SIZE = 512
+  private final val LOG_TABLE_SIZE = 512
+  private final val logTable = {
+    Array.tabulate(LOG_TABLE_SIZE + 1)(i =>
+      math.log((i + 1e-5) / LOG_TABLE_SIZE).toFloat
+    )
+  }
+  private final val sigmoidTable = {
+    Array.tabulate(SIGMOID_TABLE_SIZE + 1)(i => {
+      val x = (i * 2 * MAX_SIGMOID).toDouble / SIGMOID_TABLE_SIZE - MAX_SIGMOID
+      1.0f / (1.0f + math.exp(-x).toFloat)
+    })
+  }
+
+  def sigmoid(x: Float): Float = {
+    if (x < -MAX_SIGMOID)
+      0.0f
+    else if (x > MAX_SIGMOID)
+      1.0f
+    else
+      sigmoidTable(((x + MAX_SIGMOID) * SIGMOID_TABLE_SIZE / MAX_SIGMOID / 2).toInt)
+  }
+
+  def log(x: Float): Float = {
+    if (x > 1.0) 0.0f else logTable((x * LOG_TABLE_SIZE).toInt)
+  }*/
+        private final static int MAX_SIGMOID = 8;
+        private final static int SIGMOID_TABLE_SIZE = 512;
+        private final static int LOG_TABLE_SIZE = 512;
+        private final static float[] sigmoidTable = new float[SIGMOID_TABLE_SIZE + 1];
+        private final static float[] logTable = new float[LOG_TABLE_SIZE + 1];
+        static {
+            for (int i = 0; i < sigmoidTable.length; i++) {
+                double x = (i * 2 * MAX_SIGMOID) * 1.0 / SIGMOID_TABLE_SIZE - MAX_SIGMOID;
+                sigmoidTable[i] = 1.0f / (1.0f + (float) Math.exp(-x));
+            }
+            for (int i = 0; i < logTable.length; i++) {
+                logTable[i] = (float) Math.log((i + 1e-5) / LOG_TABLE_SIZE);
+            }
+            System.out.println(java.util.Arrays.toString(sigmoidTable));
+            System.out.println(java.util.Arrays.toString(logTable));
+        }
+
+        private static float sigmoid(float x) {
+            if (x < -MAX_SIGMOID) {
+                return 0.0f;
+            } else if (x > MAX_SIGMOID) {
+                return 1.0f;
+            } else {
+                int index = (int) ((x + MAX_SIGMOID) * SIGMOID_TABLE_SIZE / MAX_SIGMOID / 2);
+                return sigmoidTable[index];
+            }
+        }
+
+        private static float log(float x) {
+            if (x > 1.0f) {
+                return 0.0f;
+            } else {
+                int index = (int) (x * LOG_TABLE_SIZE);
+                return logTable[index];
+            }
+        }
+    }
+
     public static final float EPSILON = 1e-8f;
 
     public static float sigmoid(float x) {
@@ -12,6 +78,14 @@ public class Maths {
 
     public static double sigmoid(double x) {
         return (1.0 / (1.0 + Math.exp(-x)));
+    }
+
+    public static float fastSigmoid(float x) {
+        return FastSigmoid.sigmoid(x);
+    }
+
+    public static double fastSigmoid(double x) {
+        return (double) FastSigmoid.sigmoid((float) x);
     }
 
     public static int sqr(int x) {

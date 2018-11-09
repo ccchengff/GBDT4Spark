@@ -49,7 +49,7 @@ object GBDT extends Serializable {
         println(e.toString)
         e.printStackTrace()
     } finally {
-      // while (1 + 1 == 2) {}
+      while (1 + 1 == 2) {}
     }
 
   }

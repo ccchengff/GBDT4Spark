@@ -10,7 +10,7 @@ import org.apache.spark.{SparkConf, SparkContext}
 import org.dma.gbdt4spark.algo.gbdt.GBDTTrainer
 import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo
 import org.dma.gbdt4spark.common.Global.Conf._
-import org.dma.gbdt4spark.data.{FeatureRow, Instance}
+import org.dma.gbdt4spark.data.{FeatureRow, Instance, InstanceRow}
 import org.dma.gbdt4spark.logging.LoggerFactory
 import org.dma.gbdt4spark.sketch.HeapQuantileSketch
 import org.dma.gbdt4spark.tree.param.GBDTParam
@@ -280,6 +280,125 @@ object Transposer {
 class Transposer {
 
   @transient implicit val sc = SparkContext.getOrCreate()
+
+  def transpose2(oriData: RDD[Instance], numFeature: Int, numWorker: Int,
+                 numSplit: Int): (RDD[InstanceRow], Array[Float], Broadcast[FeatureInfo]) = {
+    val transposeStart = System.currentTimeMillis()
+    // 1. get #instance of each partition and collect labels
+    val oriNumPart = oriData.getNumPartitions
+    val partLabels = oriData.mapPartitionsWithIndex((partId, iterator) => {
+      val partLabelsArr = iterator.map(_.label.toFloat).toArray
+      Iterator((partId, partLabelsArr))
+    }).collect()
+    val (numInstances, partInsIdOffset) = {
+      val tmp = partLabels.map(_._2.length).scanLeft(0)(_+_)
+      (tmp.last, tmp.slice(0, oriNumPart))
+    }
+    val labels = new Array[Float](numInstances)
+    partLabels.foreach {
+      case (partId, partLabelsArr) =>
+        Array.copy(partLabelsArr, 0, labels, partInsIdOffset(partId), partLabelsArr.length)
+    }
+    val bcPartInsIdOffset = sc.broadcast(partInsIdOffset)
+    // 2. generate candidate splits for each feature
+    val toFPStart = System.currentTimeMillis()
+    val evenPartitioner = new EvenPartitioner(numFeature, numWorker)
+    val bcFeatureEdges = sc.broadcast(evenPartitioner.partitionEdges())
+    // 2.1. create local quantile sketch
+    val localSketchRdd = oriData.mapPartitions(iterator => {
+      val sketches = new Array[HeapQuantileSketch](numFeature)
+      for (fid <- 0 until numFeature)
+        sketches(fid) = new HeapQuantileSketch()
+      while (iterator.hasNext)
+        iterator.next().feature
+          .foreachActive((fid, fvalue) => sketches(fid).update(fvalue.toFloat))
+      sketches.view.zipWithIndex.map {
+        case (sketch, fid) => (fid, sketch)
+      }.filter(!_._2.isEmpty)
+        .iterator
+    }, preservesPartitioning = true)
+    // 2.2. repartition to executors evenly, merge as global quantile sketches
+    // and collect quantiles as splits
+    val splits = new Array[Array[Float]](numFeature)
+    localSketchRdd.partitionBy(evenPartitioner)
+      .mapPartitionsWithIndex((partId, iterator) => {
+        val featLo = bcFeatureEdges.value(partId)
+        val featHi = bcFeatureEdges.value(partId + 1)
+        val sketches = new Array[HeapQuantileSketch](featHi - featLo)
+        while (iterator.hasNext) {
+          val (fid, sketch) = iterator.next()
+          if (sketches(fid - featLo) == null)
+            sketches(fid - featLo) = sketch
+          else
+            sketches(fid - featLo).merge(sketch)
+        }
+        val splits = sketches.map(sketch => {
+          if (sketch == null) null
+          else Maths.unique(sketch.getQuantiles(numSplit))
+        })
+        Iterator((partId, splits))
+      }).collect()
+      .foreach {
+        case (partId, partSplits) =>
+          val featLo = bcFeatureEdges.value(partId)
+          for (i <- partSplits.indices)
+            splits(featLo + i) = partSplits(i)
+      }
+    // 2.3. feature info
+    val featureInfo = FeatureInfo(numFeature, splits)
+    val bcFeatureInfo = sc.broadcast(featureInfo)
+    // 3. repartition instances
+    val data = oriData.mapPartitionsWithIndex((partId, iterator) => {
+      val allSplits = bcFeatureInfo.value.splits
+      val featureEdges = bcFeatureEdges.value
+      val columnGroups = new Array[Array[(IntArrayList, ByteArrayList)]](numWorker)
+      for (workerId <- 0 until numWorker) {
+        val featLo = featureEdges(workerId)
+        val featHi = featureEdges(workerId + 1)
+        val group = (featLo until featHi).map(_ =>
+          (new IntArrayList(), new ByteArrayList())).toArray
+        columnGroups(workerId) = group
+      }
+      var curInsId = bcPartInsIdOffset.value(partId)
+      val partitioner = new EvenPartitioner(numFeature, numWorker)
+      while (iterator.hasNext) {
+        iterator.next().feature.foreachActive((fid, fvalue) => {
+          val workerId = partitioner.getPartition(fid)
+          val featLo = featureEdges(workerId)
+          val group = columnGroups(workerId)
+          group(fid - featLo)._1.add(curInsId)
+          val binId = Maths.indexOf(allSplits(fid), fvalue.toFloat)
+          group(fid - featLo)._2.add((binId + Byte.MinValue).toByte)
+        })
+        curInsId += 1
+      }
+      columnGroups.view.zipWithIndex.map {
+        case (group, workerId) =>
+          (bcFeatureEdges.value(workerId), group.map(feature =>
+            (feature._1.toIntArray(null), feature._2.toByteArray(null))))
+      }.iterator
+    }).partitionBy(evenPartitioner)
+      .mapPartitionsWithIndex((partId, iterator) => {
+        val instances = (0 until numInstances).map(_ =>
+          (new IntArrayList(), new IntArrayList())).toArray
+        iterator.toArray.sortBy(_._1).foreach {
+          case (_, group) =>
+            var curFid = bcFeatureEdges.value(partId)
+            group.foreach {
+              case (indices, bins) =>
+                for (i <- indices.indices) {
+                  val insId = indices(i)
+                  instances(insId)._1.add(curFid)
+                  val binId = bins(i).toInt - Byte.MinValue
+                  instances(insId)._2.add(binId)
+                }
+                curFid += 1
+            }
+        }
+        instances.map(ins => InstanceRow(ins._1.toIntArray(null), ins._2.toIntArray(null))).iterator
+      })
+    (data, labels, bcFeatureInfo)
+  }
 
   def transpose(dpData: RDD[Instance], numFeature: Int, numWorker: Int,
                 numSplit: Int): (RDD[Option[FeatureRow]], Array[Float], Broadcast[FeatureInfo]) = {

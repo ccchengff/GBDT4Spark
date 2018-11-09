@@ -26,6 +26,25 @@ public class SplitFinder {
         this.param = param;
     }
 
+    public GBTSplit findBestSplitFP(int featLo, Histogram[] histograms, FeatureInfo featureInfo,
+                                    GradPair sumGradPair, float nodeGain) throws Exception {
+        GBTSplit bestSplit = new GBTSplit();
+        for (int i = 0; i < histograms.length; i++) {
+            if (histograms[i] != null) {
+                Histogram histogram = histograms[i];
+                int fid = i + featLo;
+                boolean isCategorical = featureInfo.isCategorical(fid);
+                float[] splits = featureInfo.getSplits(fid);
+                int defaultBin = featureInfo.getDefaultBin(fid);
+                GBTSplit curSplit = findBestSplitOfOneFeature(fid, isCategorical,
+                        splits, defaultBin, histogram, sumGradPair, nodeGain);
+                bestSplit.update(curSplit);
+            }
+        }
+        return bestSplit;
+    }
+
+
     public GBTSplit findBestSplit(int[] sampledFeats, Option<Histogram>[] histograms, FeatureInfo featureInfo,
                                   GradPair sumGradPair, float nodeGain) throws Exception {
         GBTSplit bestSplit;

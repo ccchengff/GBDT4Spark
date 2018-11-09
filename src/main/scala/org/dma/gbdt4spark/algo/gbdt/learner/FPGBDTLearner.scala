@@ -14,7 +14,8 @@ import org.dma.gbdt4spark.util.{EvenPartitioner, Maths, RangeBitSet}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.JavaConverters._
-import scala.util.Sorting
+import scala.util.Random
+import java.{util => ju}
 
 object FPGBDTLearner {
   def ensureLabel(labels: Array[Float], numLabel: Int): Unit = {
@@ -71,11 +72,11 @@ object FPGBDTLearner {
 }
 
 class FPGBDTLearner(val workerId: Int, val param: GBDTParam, _featureInfo: FeatureInfo,
-                    _trainDataFP: Array[Option[FeatureRow]], _labels: Array[Float],
+                    _trainData: Array[InstanceRow], _labels: Array[Float],
                     _validData: Array[Vector], _validLabel: Array[Float]) {
   @transient private[learner] val forest = ArrayBuffer[GBTTree]()
 
-  @transient private val trainDataFP: Array[Option[FeatureRow]] = _trainDataFP
+  @transient private val trainData: Array[InstanceRow] = _trainData
   @transient private val labels: Array[Float] = _labels
   @transient private val validData: Array[Vector] = _validData
   @transient private val validLabels: Array[Float] = _validLabel
@@ -85,13 +86,13 @@ class FPGBDTLearner(val workerId: Int, val param: GBDTParam, _featureInfo: Featu
     val featureEdges = new EvenPartitioner(param.numFeature, param.numWorker).partitionEdges()
     (featureEdges(workerId), featureEdges(workerId + 1))
   }
-  private[learner] val sampledFeats = {
-    val numSampledFeats = Math.round((featHi - featLo) * param.featSampleRatio)
-    if (numSampledFeats == featHi - featLo)
-      (featLo until featHi).toArray
-    else
-      new Array[Int](numSampledFeats)
-  }
+  private[learner] val numFeatUsed = Math.round((featHi - featLo) * param.featSampleRatio)
+  private[learner] val isFeatUsed =
+    if (numFeatUsed == featHi - featLo) {
+      (featLo until featHi).map(fid => _featureInfo.getNumBin(fid) > 0).toArray
+    } else {
+      new Array[Boolean](featHi - featLo)
+    }
   private[learner] val featureInfo: FeatureInfo = _featureInfo
   private[learner] val dataInfo = DataInfo(param, labels.length)
 
@@ -105,18 +106,17 @@ class FPGBDTLearner(val workerId: Int, val param: GBDTParam, _featureInfo: Featu
   private[learner] val broadcastSplitResult: (Int, Int, Int, RangeBitSet) => RangeBitSet = null
   private[learner] val askForSplitResult: (Int, Int, Int) => RangeBitSet = null
 
-  @transient private val trainDataDP: Array[InstanceRow] = FPGBDTLearner.retranspose(trainDataFP, labels.length, featLo)
-
   def createNewTree(): Unit = {
     // 1. create new tree
     val tree = new GBTTree(param)
     this.forest += tree
     // 2. sample features
-    if (sampledFeats.length != featHi - featLo) {
-      val temp = (featLo until featHi).toArray
-      Maths.shuffle(temp)
-      Array.copy(temp, 0, sampledFeats, 0, sampledFeats.length)
-      Sorting.quickSort(sampledFeats)
+    if (numFeatUsed != featHi - featLo) {
+      ju.Arrays.fill(isFeatUsed, false)
+      for (_ <- 0 until numFeatUsed) {
+        val rand = Random.nextInt(featHi - featLo)
+        isFeatUsed(rand) = featureInfo.getNumBin(featLo + rand) > 0
+      }
     }
     // 3. reset position info
     dataInfo.resetPosInfo()
@@ -125,32 +125,27 @@ class FPGBDTLearner(val workerId: Int, val param: GBDTParam, _featureInfo: Featu
     tree.getRoot.setSumGradPair(dataInfo.sumGradPair(0))
   }
 
-  def buildHistograms(nid: Int): Array[Option[Histogram]] = {
-//    histBuilder.buildHistograms(sampledFeats, featLo, trainDataFP, featureInfo, dataInfo,
-//      nid, forest.last.getNode(nid).getSumGradPair)
-    histBuilder.buildHistograms(sampledFeats, featLo, trainDataFP, featureInfo, dataInfo,
-      trainDataDP, nid, forest.last.getNode(nid).getSumGradPair)
+  def buildHistograms(nid: Int): Array[Histogram] = {
+    histBuilder.buildHistogramsFP(isFeatUsed, featLo, trainData, featureInfo, dataInfo,
+      nid, forest.last.getNode(nid).getSumGradPair)
   }
 
-  def histSubtraction(parHist: Array[Option[Histogram]], sibHist: Array[Option[Histogram]]): Unit = {
-    require(parHist.length == sibHist.length)
-    for (i <- parHist.indices) {
-      if (parHist(i).isDefined && sibHist(i).isDefined) {
-        parHist(i).get.subtractBy(sibHist(i).get)
-      } else if (parHist(i).isDefined || sibHist(i).isDefined) {
-        throw new GBDTException("Histograms of parent's and sibling's do not present together")
+  def histSubtraction(parHist: Array[Histogram], sibHist: Array[Histogram]): Unit = {
+    for (i <- isFeatUsed.indices) {
+      if (isFeatUsed(i)) {
+        parHist(i).subtractBy(sibHist(i))
       }
     }
   }
 
-  def findLocalBestSplit(nid: Int, histograms: Array[Option[Histogram]]): GBTSplit = {
+  def findLocalBestSplit(nid: Int, histograms: Array[Histogram]): GBTSplit = {
     val node = forest.last.getNode(nid)
     val sumGradPair = node.getSumGradPair
     val nodeGain = node.calcGain(param)
-    splitFinder.findBestSplit(sampledFeats, histograms, featureInfo, sumGradPair, nodeGain)
+    splitFinder.findBestSplitFP(featLo, histograms, featureInfo, sumGradPair, nodeGain)
   }
 
-  def findGlobalBestSplit(nid: Int, histograms: Array[Option[Histogram]]): GBTSplit = {
+  def findGlobalBestSplit(nid: Int, histograms: Array[Histogram]): GBTSplit = {
     val localBestSplit = findLocalBestSplit(nid, histograms)
     val treeId = 0
     gatherBestSplit(treeId, nid, workerId, localBestSplit)
@@ -174,16 +169,17 @@ class FPGBDTLearner(val workerId: Int, val param: GBDTParam, _featureInfo: Featu
     forest.last.getNode(nid).setSplitEntry(splitEntry)
     val splitFid = splitEntry.getFid
     if (featLo <= splitFid && splitFid < featHi) {
-      val featureRow = trainDataFP(splitFid - featLo).get
       val splits = featureInfo.getSplits(splitFid)
-      Option(dataInfo.getSplitResult(nid, splitEntry, featureRow, splits))
+      Option(dataInfo.getSplitResult(nid, splitEntry, splits, trainData))
     } else {
       Option.empty
     }
   }
 
   def splitNode(nid: Int, splitResult: RangeBitSet): Unit = {
+    val t0 = System.currentTimeMillis()
     dataInfo.updatePos(nid, splitResult)
+    val t1 = System.currentTimeMillis()
     val tree = forest.last
     val node = tree.getNode(nid)
     val leftChild = new GBTNode(2 * nid + 1, node, param.numClass)
@@ -192,6 +188,7 @@ class FPGBDTLearner(val workerId: Int, val param: GBDTParam, _featureInfo: Featu
     node.setRightChild(rightChild)
     tree.setNode(2 * nid + 1, leftChild)
     tree.setNode(2 * nid + 2, rightChild)
+    val t2 = System.currentTimeMillis()
     val leftSize = dataInfo.getNodeSize(2 * nid + 1)
     val rightSize = dataInfo.getNodeSize(2 * nid + 2)
     if (leftSize < rightSize) {
@@ -205,10 +202,9 @@ class FPGBDTLearner(val workerId: Int, val param: GBDTParam, _featureInfo: Featu
       leftChild.setSumGradPair(leftSumGradPair)
       rightChild.setSumGradPair(rightSumGradPair)
     }
-    if (2 * nid + 1 >= Maths.pow(2, param.maxDepth) - 1) {
-      setAsLeaf(2 * nid + 1)
-      setAsLeaf(2 * nid + 2)
-    }
+    val t3 = System.currentTimeMillis()
+    println(s"Split node[$nid] cost ${t3 - t0} ms, including " +
+      s"updatePos[${t1 - t0}], setNodes[${t2 - t1}], setGradPair[${t3 - t2}]")
   }
 
   def setAsLeaf(nid: Int): Unit = setAsLeaf(nid, forest.last.getNode(nid))

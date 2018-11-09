@@ -9,7 +9,7 @@ public class GBDTParam extends RegTParam {
 
     public boolean histSubtraction;
     public boolean lighterChildFirst;
-    //public boolean leafwise;  // true if leaf-wise training, false if level-wise training
+    public boolean leafwise;  // true if leaf-wise training, false if level-wise training
 
     public boolean fullHessian;  // whether to use full hessian matrix instead of diagonal
     public float minChildWeight;  // minimum amount of hessian (weight) allowed for a child
