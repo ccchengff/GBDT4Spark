@@ -1,14 +1,13 @@
 package org.dma.gbdt4spark.algo.gbdt.metadata
 
-import java.util
-
-import it.unimi.dsi.fastutil.ints.IntArrayList
 import org.dma.gbdt4spark.algo.gbdt.histogram.{BinaryGradPair, GradPair, MultiGradPair}
 import org.dma.gbdt4spark.data.{FeatureRow, InstanceRow}
 import org.dma.gbdt4spark.objective.loss.{BinaryLoss, Loss, MultiLoss}
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.tree.split.SplitEntry
 import org.dma.gbdt4spark.util._
+
+import java.{util => ju}
 
 object DataInfo {
   def apply(param: GBDTParam, numData: Int): DataInfo = {
@@ -48,41 +47,60 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
     }
   }
 
-  def calcGradPairs(nid: Int, labels: Array[Float], loss: Loss, param: GBDTParam): Unit = {
+  def calcGradPairs(nid: Int, labels: Array[Float], loss: Loss, param: GBDTParam): GradPair = {
     val nodeStart = nodePosStart(nid)
     val nodeEnd = nodePosEnd(nid)
     val numClass = param.numClass
     if (numClass == 2) {
       // binary classification
       val binaryLoss = loss.asInstanceOf[BinaryLoss]
+      var sumGrad = 0.0
+      var sumHess = 0.0
       for (posId <- nodeStart to nodeEnd) {
         val insId = nodeToIns(posId)
         val grad = binaryLoss.firOrderGrad(predictions(insId), labels(insId))
         val hess = binaryLoss.secOrderGrad(predictions(insId), labels(insId), grad)
         gradPairs(insId) = new BinaryGradPair(grad, hess)
+        sumGrad += grad
+        sumHess += hess
       }
+      new BinaryGradPair(sumGrad, sumHess)
     } else if (!param.fullHessian) {
       // multi-label classification, assume hessian matrix is diagonal
       val multiLoss = loss.asInstanceOf[MultiLoss]
       val preds = new Array[Float](numClass)
+      val sumGrad = new Array[Double](numClass)
+      val sumHess = new Array[Double](numClass)
       for (posId <- nodeStart to nodeEnd) {
         val insId = nodeToIns(posId)
         Array.copy(predictions, insId * numClass, preds, 0, numClass)
         val grad = multiLoss.firOrderGrad(preds, labels(insId))
         val hess = multiLoss.secOrderGradDiag(preds, labels(insId), grad)
         gradPairs(insId) = new MultiGradPair(grad, hess)
+        for (k <- 0 until numClass) {
+          sumGrad(k) += grad(k)
+          sumHess(k) += hess(k)
+        }
       }
+      new MultiGradPair(sumGrad, sumHess)
     } else {
       // multi-label classification, represent hessian matrix as lower triangular matrix
       val multiLoss = loss.asInstanceOf[MultiLoss]
       val preds = new Array[Float](numClass)
+      val sumGrad = new Array[Double](numClass)
+      val sumHess = new Array[Double](numClass * (numClass + 1) / 2)
       for (posId <- nodeStart to nodeEnd) {
         val insId = nodeToIns(posId)
         Array.copy(predictions, insId * numClass, preds, 0, numClass)
         val grad = multiLoss.firOrderGrad(preds, labels(insId))
         val hess = multiLoss.secOrderGradFull(preds, labels(insId), grad)
         gradPairs(insId) = new MultiGradPair(grad, hess)
+        for (k <- 0 until numClass)
+          sumGrad(k) += grad(k)
+        for (k <- 0 until numClass * (numClass + 1) / 2)
+          sumHess(k) += hess(k)
       }
+      new MultiGradPair(sumGrad, sumHess)
     }
   }
 
@@ -144,7 +162,7 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
     val fid = splitEntry.getFid
     for (posId <- nodePosStart(nid) to nodePosEnd(nid)) {
       val ins = instances(nodeToIns(posId))
-      val t = java.util.Arrays.binarySearch(ins.indices, fid)
+      val t = ju.Arrays.binarySearch(ins.indices, fid)
       val flowTo = if (t >= 0) {
         splitEntry.flowTo(splits(ins.bins(t)))
       } else {
@@ -211,7 +229,7 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
     } else {
       for (posId <- nodeStart to nodeEnd) {
         val insId = nodeToIns(posId)
-        val index = util.Arrays.binarySearch(featureRow.indices, insId)
+        val index = ju.Arrays.binarySearch(featureRow.indices, insId)
         val flowTo = if (index >= 0) {
           val value = splits(featureRow.bins(index))
           splitEntry.flowTo(value)
@@ -244,11 +262,30 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
     //writer.getBytes
   }
 
-  //def updatePos(nid: Int, flowTos: (Array[Int], Array[Int])): Unit = {
+  def updatePos(nid: Int, flowTos: (Array[Int], Array[Int])): Unit = {
+    val nodeStart = nodePosStart(nid)
+    val nodeEnd = nodePosEnd(nid)
+    val flowToLeft = flowTos._1
+    val flowToRight = flowTos._2
+    for (i <- flowToLeft.indices) {
+      nodeToIns(nodeStart + i) = flowToLeft(i)
+      insPos(flowToLeft(i)) = nodeStart + i
+    }
+    for (i <- flowToRight.indices) {
+      nodeToIns(nodeStart + flowToLeft.length + i) = flowToRight(i)
+      insPos(flowToRight(i)) = nodeStart + flowToLeft.length + i
+    }
+    val cutPos = nodeStart + flowToLeft.length - 1
+    nodePosStart(2 * nid + 1) = nodeStart
+    nodePosEnd(2 * nid + 1) = cutPos
+    nodePosStart(2 * nid + 2) = cutPos + 1
+    nodePosEnd(2 * nid + 2) = nodeEnd
+  }
+
   def updatePos(nid: Int, splitResult: RangeBitSet): Unit = {
     val nodeStart = nodePosStart(nid)
     val nodeEnd = nodePosEnd(nid)
-    val copy = nodeToIns.slice(nodeStart, nodeEnd + 1)
+    /*val copy = nodeToIns.slice(nodeStart, nodeEnd + 1)
     var posL = nodeStart
     var posR = nodeEnd - splitResult.getNumSetTimes + 1
     for (posId <- nodeStart to nodeEnd) {
@@ -264,7 +301,7 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
       }
     }
     require(posL + splitResult.getNumSetTimes == posR && posR == nodeEnd + 1)
-    val cutPos = posL - 1
+    val cutPos = posL - 1*/
     /*val flowToLeft = flowTos._1
     val flowToRight = flowTos._2
     for (i <- flowToLeft.indices) {
@@ -276,7 +313,7 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
       insPos(flowToRight(i)) = nodeStart + flowToLeft.length + i
     }
     val cutPos = nodeStart + flowToLeft.length - 1*/
-    /*var left = nodeStart
+    var left = nodeStart
     var right = nodeEnd
     //val reader = new BufferedBitSetReader(bytes, nodeEnd - nodeStart + 1)
     while (left < right) {
@@ -302,7 +339,7 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
       else left
     } else {
       right
-    }*/
+    }
     nodePosStart(2 * nid + 1) = nodeStart
     nodePosEnd(2 * nid + 1) = cutPos
     nodePosStart(2 * nid + 2) = cutPos + 1

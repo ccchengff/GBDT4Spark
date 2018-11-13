@@ -20,23 +20,22 @@ public class HistBuilder {
 
     private final GBDTParam param;
 
+    private static int MIN_INSTANCE_PER_THREAD = 10000;
+    private ExecutorService threadPool;
+    private FPBuilderThread[] fpThreads;
+
     public HistBuilder(final GBDTParam param) {
         this.param = param;
-    }
-
-    private static int MIN_INSTANCE_PER_THREAD = 10000;
-    private static ExecutorService threadPool;
-    private static FPBuilderThread[] fpThreads;
-
-    public static void init(GBDTParam param) {
-        threadPool = Executors.newFixedThreadPool(param.numThread);
-        fpThreads = new FPBuilderThread[param.numThread];
-        for (int threadId = 0; threadId < param.numThread; threadId++) {
-            fpThreads[threadId] = new FPBuilderThread(threadId, param);
+        if (param.numThread > 1) {
+            this.threadPool = Executors.newFixedThreadPool(param.numThread);
+            this.fpThreads = new FPBuilderThread[param.numThread];
+            for (int threadId = 0; threadId < param.numThread; threadId++) {
+                this.fpThreads[threadId] = new FPBuilderThread(threadId, param);
+            }
         }
     }
 
-    public static void close() {
+    public void shutdown() {
         if (threadPool != null && !threadPool.isShutdown()) {
             threadPool.shutdown();
         }
@@ -105,9 +104,6 @@ public class HistBuilder {
             res = sparseBuildFP(param, isFeatUsed, featLo, featureInfo, instanceRows,
                     gradPairs, nodeToIns, nodeStart, nodeEnd);
         } else {
-            if (threadPool == null)
-                init(param);
-
             int actualNumThread = Math.min(param.numThread,
                     (nodeEnd - nodeStart + 1 + MIN_INSTANCE_PER_THREAD - 1) / MIN_INSTANCE_PER_THREAD);
             LOG.info(String.format("Number of instances[%d], pos[%d, %d] actual thread num[%d]",
@@ -148,39 +144,23 @@ public class HistBuilder {
             }
         }
         return res;
+    }
 
-        /*Histogram[] histograms = new Histogram[isFeatUsed.length];
-        for (int i = 0; i < isFeatUsed.length; i++) {
-            if (isFeatUsed[i])
-                histograms[i] = new Histogram(featureInfo.getNumBin(featLo + i),
-                        param.numClass, param.fullHessian);
-        }
-        GradPair[] gradPairs = dataInfo.gradPairs();
-        int nodeStart = dataInfo.getNodePosStart(nid);
-        int nodeEnd = dataInfo.getNodePosEnd(nid);
-        int[] nodeToIns = dataInfo.nodeToIns();
-        for (int posId = nodeStart; posId <= nodeEnd; posId++) {
-            int insId = nodeToIns[posId];
-            InstanceRow ins = instanceRows[insId];
-            int[] indices = ins.indices();
-            int[] bins = ins.bins();
-            int nnz = indices.length;
-            for (int j = 0; j < nnz; j++) {
-                int fid = indices[j];
-                if (isFeatUsed[fid - featLo]) {
-                    histograms[fid - featLo].accumulate(bins[j], gradPairs[insId]);
-                }
+    public Histogram[] histSubtraction(Histogram[] mined, Histogram[] miner, boolean inPlace) {
+        if (inPlace) {
+            for (int i = 0; i < mined.length; i++) {
+                if (mined[i] != null)
+                    mined[i].subtractBy(miner[i]);
             }
-        }
-        for (int i = 0; i < isFeatUsed.length; i++) {
-            if (isFeatUsed[i]) {
-                GradPair taken = histograms[i].sum();
-                GradPair remain = sumGradPair.subtract(taken);
-                int defaultBin = featureInfo.getDefaultBin(featLo + i);
-                histograms[i].accumulate(defaultBin, remain);
+            return mined;
+        } else {
+            Histogram[] res = new Histogram[mined.length];
+            for (int i = 0; i < mined.length; i++) {
+                if (mined[i] != null)
+                    res[i] = mined[i].subtract(miner[i]);
             }
+            return res;
         }
-        return histograms;*/
     }
 
     public Option<Histogram>[] buildHistogram(int[] sampleFeats, int featLo, FeatureInfo featureInfo, DataInfo dataInfo,

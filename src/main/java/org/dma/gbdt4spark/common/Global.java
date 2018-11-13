@@ -36,6 +36,8 @@ public class Global {
         public static final boolean DEFAULT_ML_GBDT_FULL_HESSIAN = false;
         public static final String ML_GBDT_MIN_CHILD_WEIGHT = "spark.gbdt.min.child.weight";
         public static final double DEFAULT_ML_GBDT_MIN_CHILD_WEIGHT = 0.0;
+        public static final String ML_GBDT_MIN_NODE_INSTANCE = "spark.gbdt.min.node.instance";
+        public static final int DEFAULT_ML_GBDT_MIN_NODE_INSTANCE = 1024;
         public static final String ML_GBDT_MIN_SPLIT_GAIN = "spark.gbdt.min.split.gain";
         public static final double DEFAULT_ML_GBDT_MIN_SPLIT_GAIN = 0.0;
         public static final String ML_GBDT_REG_ALPHA = "spark.gbdt.reg.alpha";

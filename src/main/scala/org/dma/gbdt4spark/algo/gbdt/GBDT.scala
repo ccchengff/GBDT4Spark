@@ -10,7 +10,7 @@ object GBDT extends Serializable {
   private val LOG = LoggerFactory.getLogger(GBDT.getClass)
 
   def main(args: Array[String]): Unit = {
-    val conf = new SparkConf().setAppName("GBDT")
+    val conf = new SparkConf()
     implicit val sc = SparkContext.getOrCreate(conf)
 
     val param = new GBDTParam
@@ -31,6 +31,7 @@ object GBDT extends Serializable {
     val maxNodeNum = Maths.pow(2, param.maxDepth + 1) - 1
     param.maxNodeNum = conf.getInt(ML_GBDT_MAX_NODE_NUM, maxNodeNum) min maxNodeNum
     param.minChildWeight = conf.getDouble(ML_GBDT_MIN_CHILD_WEIGHT, DEFAULT_ML_GBDT_MIN_CHILD_WEIGHT).toFloat
+    param.minNodeInstance = conf.getInt(ML_GBDT_MIN_NODE_INSTANCE, DEFAULT_ML_GBDT_MIN_NODE_INSTANCE)
     param.minSplitGain = conf.getDouble(ML_GBDT_MIN_SPLIT_GAIN, DEFAULT_ML_GBDT_MIN_SPLIT_GAIN).toFloat
     param.regAlpha = conf.getDouble(ML_GBDT_REG_ALPHA, DEFAULT_ML_GBDT_REG_ALPHA).toFloat
     param.regLambda = conf.getDouble(ML_GBDT_REG_LAMBDA, DEFAULT_ML_GBDT_REG_LAMBDA).toFloat max 1.0f
@@ -49,7 +50,7 @@ object GBDT extends Serializable {
         println(e.toString)
         e.printStackTrace()
     } finally {
-      while (1 + 1 == 2) {}
+      //while (1 + 1 == 2) {}
     }
 
   }

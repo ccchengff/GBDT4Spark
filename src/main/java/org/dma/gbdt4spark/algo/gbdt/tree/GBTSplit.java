@@ -21,6 +21,11 @@ public class GBTSplit implements Serializable {
         this.rightGradPair = rightGradPair;
     }
 
+    public boolean isValid(float minSplitGain) {
+        return splitEntry != null && !splitEntry.isEmpty()
+                && splitEntry.getGain() > minSplitGain;
+    }
+
     public boolean needReplace(GBTSplit split) {
         if (this.splitEntry != null)
             return split.splitEntry != null && this.splitEntry.needReplace(split.splitEntry);

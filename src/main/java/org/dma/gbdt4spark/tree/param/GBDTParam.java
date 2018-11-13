@@ -13,6 +13,7 @@ public class GBDTParam extends RegTParam {
 
     public boolean fullHessian;  // whether to use full hessian matrix instead of diagonal
     public float minChildWeight;  // minimum amount of hessian (weight) allowed for a child
+    public int minNodeInstance = 1000000000;
     public float regAlpha;  // L1 regularization factor
     public float regLambda;  // L2 regularization factor
     public float maxLeafWeight; // maximum leaf weight, default 0 means no constraints
@@ -28,6 +29,10 @@ public class GBDTParam extends RegTParam {
      */
     public boolean satisfyWeight(double sumHess) {
         return sumHess >= minChildWeight;
+    }
+
+    public boolean satisfyWeight(double sumGrad, double sumHess) {
+        return sumGrad != 0.0f && satisfyWeight(sumHess);
     }
 
     /**
@@ -50,6 +55,10 @@ public class GBDTParam extends RegTParam {
             }
         }
         return w >= minChildWeight;
+    }
+
+    public boolean satisfyWeight(double[] sumGrad, double[] sumHess) {
+        return !Maths.areZeros(sumGrad) && satisfyWeight(sumHess);
     }
 
     /**
