@@ -1,6 +1,7 @@
 package org.dma.gbdt4spark.algo.gbdt
 
 import org.apache.spark.{SparkConf, SparkContext}
+import org.dma.gbdt4spark.algo.gbdt.learner.SparkFPGBDTTrainer
 import org.dma.gbdt4spark.common.Global.Conf._
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.util.Maths
@@ -38,8 +39,6 @@ object GBDT extends Serializable {
     param.maxLeafWeight = conf.getDouble(ML_GBDT_MAX_LEAF_WEIGHT, DEFAULT_ML_GBDT_MAX_LEAF_WEIGHT).toFloat
 
     try {
-      //val trainer = new GBDTTrainer(param)
-      import org.dma.gbdt4spark.algo.gbdt.learner.SparkFPGBDTTrainer
       val trainer = new SparkFPGBDTTrainer(param)
       val input = conf.get(ML_TRAIN_DATA_PATH)
       val validRatio = conf.getDouble(ML_VALID_DATA_RATIO, DEFAULT_ML_VALID_DATA_RATIO)

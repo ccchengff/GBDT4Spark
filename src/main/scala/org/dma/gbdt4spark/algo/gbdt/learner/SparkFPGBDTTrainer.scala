@@ -8,7 +8,6 @@ import org.dma.gbdt4spark.data.Instance
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.util.{DataLoader, Maths, Transposer}
 
-
 class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
   @transient implicit val sc = SparkContext.getOrCreate()
 
@@ -124,7 +123,8 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
     val forest = workers.map(_.finalizeModel()).collect()(0)
     forest.zipWithIndex.foreach {
       case (tree, treeId) =>
-        println(s"Tree[${treeId + 1}] contains ${tree.size} nodes")
+        println(s"Tree[${treeId + 1}] contains ${tree.size} nodes " +
+          s"(${(tree.size - 1) / 2 + 1} leaves)")
     }
   }
 }

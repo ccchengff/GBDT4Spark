@@ -106,14 +106,10 @@ public class HistBuilder {
         } else {
             int actualNumThread = Math.min(param.numThread,
                     (nodeEnd - nodeStart + 1 + MIN_INSTANCE_PER_THREAD - 1) / MIN_INSTANCE_PER_THREAD);
-            LOG.info(String.format("Number of instances[%d], pos[%d, %d] actual thread num[%d]",
-                    nodeEnd - nodeStart + 1, nodeStart, nodeEnd, actualNumThread));
             Future[] futures = new Future[actualNumThread];
             int avg = (nodeEnd - nodeStart + 1) / actualNumThread;
             int from = nodeStart, to = nodeStart + avg;
             for (int threadId = 0; threadId < actualNumThread; threadId++) {
-                LOG.info(String.format("Thread[%d] from[%d] to[%d]",
-                        threadId, from, to));
                 FPBuilderThread builder = fpThreads[threadId];
                 builder.isFeatUsed = isFeatUsed;
                 builder.featLo = featLo;
@@ -383,9 +379,9 @@ public class HistBuilder {
             //        "foreach[%d], binarySearch[%d]", System.currentTimeMillis() - startTime,
             //        prepareCost, allocCost, accCost, addRemainCost, foreachCost, binarySearchCost));
 
-            LOG.info(String.format("Build hist cost %d ms, prepare[%d], alloc[%d], acc[%d], addRemain[%d]," +
-                            "merge[%d]", System.currentTimeMillis() - startTime,
-                    prepareCost, allocCost, accCost, addRemainCost, mergeCost));
+//            LOG.info(String.format("Build hist cost %d ms, prepare[%d], alloc[%d], acc[%d], addRemain[%d]," +
+//                            "merge[%d]", System.currentTimeMillis() - startTime,
+//                    prepareCost, allocCost, accCost, addRemainCost, mergeCost));
 
             return null;
         }
