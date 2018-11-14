@@ -46,7 +46,10 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
           Iterator(worker)
         }
       ).cache()
-    workers.foreach(worker => println(s"Worker[${worker.learnerId}] initialization done"))
+    workers.foreach(worker =>
+      println(s"Worker[${worker.learnerId}] initialization done. " +
+        s"Hyper-parameters:\n$param")
+    )
 
     train.unpersist()
     valid.unpersist()

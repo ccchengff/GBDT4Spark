@@ -2,6 +2,8 @@ package org.dma.gbdt4spark.tree.param;
 
 import org.dma.gbdt4spark.util.Maths;
 
+import java.util.Arrays;
+
 public class GBDTParam extends RegTParam {
     public int numClass; // number of classes/labels
     public int numTree;  // number of trees
@@ -9,11 +11,11 @@ public class GBDTParam extends RegTParam {
 
     public boolean histSubtraction;
     public boolean lighterChildFirst;
-    public boolean leafwise;  // true if leaf-wise training, false if level-wise training
+    //public boolean leafwise;  // true if leaf-wise training, false if level-wise training
 
     public boolean fullHessian;  // whether to use full hessian matrix instead of diagonal
     public float minChildWeight;  // minimum amount of hessian (weight) allowed for a child
-    public int minNodeInstance = 1000000000;
+    public int minNodeInstance;
     public float regAlpha;  // L1 regularization factor
     public float regLambda;  // L2 regularization factor
     public float maxLeafWeight; // maximum leaf weight, default 0 means no constraints
@@ -179,5 +181,21 @@ public class GBDTParam extends RegTParam {
         }
     }
 
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder(super.toString());
+        sb.append(String.format("|numClass = %d\n", numClass));
+        sb.append(String.format("|numTree = %d\n", numTree));
+        sb.append(String.format("|numThread = %d\n", numThread));
+        sb.append(String.format("|fullHessian = %s\n", fullHessian));
+        sb.append(String.format("|minChildWeight = %f\n", minChildWeight));
+        sb.append(String.format("|minNodeInstance = %d\n", minNodeInstance));
+        sb.append(String.format("|regAlpha = %s\n", regAlpha));
+        sb.append(String.format("|regLambda = %s\n", regLambda));
+        sb.append(String.format("|maxLeafWeight = %s\n", maxLeafWeight));
+        sb.append(String.format("|lossFunc = %s\n", lossFunc));
+        sb.append(String.format("|evalMetrics = %s\n", Arrays.toString(evalMetrics)));
+        return sb.toString();
+    }
 }
 
