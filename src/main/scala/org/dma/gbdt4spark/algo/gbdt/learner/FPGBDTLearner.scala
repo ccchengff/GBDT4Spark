@@ -25,19 +25,24 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
   @transient private val labels: Array[Float] = _labels
   @transient private val validData: Array[Vector] = _validData
   @transient private val validLabels: Array[Float] = _validLabel
-  @transient private val validPreds = new Array[Float](validData.length)
+  @transient private val validPreds = {
+    if (param.numClass == 2)
+      new Array[Float](validData.length)
+    else
+      new Array[Float](validData.length * param.numClass)
+  }
 
   private[learner] val (featLo, featHi) = {
     val featureEdges = new EvenPartitioner(param.numFeature, param.numWorker).partitionEdges()
     (featureEdges(learnerId), featureEdges(learnerId + 1))
   }
   private[learner] val numFeatUsed = Math.round((featHi - featLo) * param.featSampleRatio)
-  private[learner] val isFeatUsed =
-    if (numFeatUsed == featHi - featLo) {
+  private[learner] val isFeatUsed = {
+    if (numFeatUsed == featHi - featLo)
       (featLo until featHi).map(fid => _featureInfo.getNumBin(fid) > 0).toArray
-    } else {
+    else
       new Array[Boolean](featHi - featLo)
-    }
+  }
   private[learner] val featureInfo: FeatureInfo = _featureInfo
   private[learner] val dataInfo = DataInfo(param, labels.length)
 

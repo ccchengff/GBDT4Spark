@@ -20,22 +20,13 @@ object DataInfo {
     val nodePosEnd = new Array[Int](maxNodeNum)
     val nodeToIns = new Array[Int](numData)
     val insPos = new Array[Int](numData)
-    if (nodeToInsCopy == null)
-      nodeToInsCopy = new Array[Int](numData)
-    //val insToFeat = new Array[IntOpenHashSet](numData)
-    //for (i <- 0 until numData) insToFeat(i) = new IntOpenHashSet()
-    //new DataInfo(predictions, weights, gradParis, nodePosStart, nodePosEnd, nodeToIns, insPos, insToFeat)
     new DataInfo(predictions, weights, gradParis, nodePosStart, nodePosEnd, nodeToIns, insPos)
   }
-
-  private var nodeToInsCopy: Array[Int] = _
 
 }
 
 case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs: Array[GradPair],
                     nodePosStart: Array[Int], nodePosEnd: Array[Int], nodeToIns: Array[Int], insPos: Array[Int]) {
-
-  //def inputNNZ(insId: Int, fid: Int): Unit = insToFeat(insId).add(fid)
 
   def resetPosInfo(): Unit = {
     val num = weights.length
