@@ -6,10 +6,9 @@ import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo;
 import org.dma.gbdt4spark.data.FeatureRow;
 import org.dma.gbdt4spark.data.InstanceRow;
 import org.dma.gbdt4spark.tree.param.GBDTParam;
-//import org.slf4j.Logger;
-//import org.slf4j.LoggerFactory;
-import org.dma.gbdt4spark.logging.Logger;
-import org.dma.gbdt4spark.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.dma.gbdt4spark.util.Maths;
 import scala.Option;
 
 import java.util.Arrays;
@@ -20,7 +19,7 @@ public class HistBuilder {
 
     private final GBDTParam param;
 
-    private static int MIN_INSTANCE_PER_THREAD = 10000;
+    private static final int MIN_INSTANCE_PER_THREAD = 10000;
     private ExecutorService threadPool;
     private FPBuilderThread[] fpThreads;
 
@@ -64,7 +63,6 @@ public class HistBuilder {
         }
     }
 
-
     private static Histogram[] sparseBuildFP(GBDTParam param, boolean[] isFeatUsed,
                                              int featLo, FeatureInfo featureInfo,
                                              InstanceRow[] instanceRows, GradPair[] gradPairs,
@@ -105,7 +103,7 @@ public class HistBuilder {
                     gradPairs, nodeToIns, nodeStart, nodeEnd);
         } else {
             int actualNumThread = Math.min(param.numThread,
-                    (nodeEnd - nodeStart + 1 + MIN_INSTANCE_PER_THREAD - 1) / MIN_INSTANCE_PER_THREAD);
+                    Maths.idivCeil(nodeEnd - nodeStart + 1, MIN_INSTANCE_PER_THREAD));
             Future[] futures = new Future[actualNumThread];
             int avg = (nodeEnd - nodeStart + 1) / actualNumThread;
             int from = nodeStart, to = nodeStart + avg;
@@ -157,46 +155,6 @@ public class HistBuilder {
             }
             return res;
         }
-    }
-
-    public Option<Histogram>[] buildHistogram(int[] sampleFeats, int featLo, FeatureInfo featureInfo, DataInfo dataInfo,
-                                               InstanceRow[] instanceRows, int nid, GradPair sumGradPair) {
-        int numF = sampleFeats.length;
-        Histogram[] histograms = new Histogram[numF];
-        for (int i = 0; i < numF; i++) {
-            int fid = sampleFeats[i];
-            if (featureInfo.nnz(fid) > 0)
-                histograms[i] = new Histogram(featureInfo.getNumBin(fid),
-                        param.numClass, param.fullHessian);
-        }
-        GradPair[] gradPairs = dataInfo.gradPairs();
-        int nodeStart = dataInfo.getNodePosStart(nid);
-        int nodeEnd = dataInfo.getNodePosEnd(nid);
-        int[] nodeToPos = dataInfo.nodeToIns();
-        for (int posId = nodeStart; posId <= nodeEnd; posId++) {
-            int insId = nodeToPos[posId];
-            if (instanceRows[insId] != null) {
-                int[] indices = instanceRows[insId].indices();
-                int[] bins = instanceRows[insId].bins();
-                int nnz = indices.length;
-                for (int j = 0; j < nnz; j++) {
-                    histograms[indices[j] - featLo].accumulate(bins[j], gradPairs[insId]);
-                }
-            }
-        }
-        Option<Histogram>[] res = new Option[numF];
-        for (int i = 0; i < numF; i++) {
-            if (histograms[i] != null) {
-                GradPair taken = histograms[i].sum();
-                GradPair remain = sumGradPair.subtract(taken);
-                int defaultBin = featureInfo.getDefaultBin(featLo + i);
-                histograms[i].accumulate(defaultBin, remain);
-                res[i] = Option.apply(histograms[i]);
-            } else {
-                res[i] = Option.empty();
-            }
-        }
-        return res;
     }
 
     public Option<Histogram>[] buildHistograms(int[] sampleFeats, int featLo, Option<FeatureRow>[] featureRows,
@@ -304,31 +262,17 @@ public class HistBuilder {
             int from = threadId * avg;
             int to = threadId + 1 == param.numThread ? featureRows.length : from + avg;
 
-            long startTime = System.currentTimeMillis();
-            long prepareCost = 0L;
-            long allocCost = 0L;
-            long accCost = 0L;
-            long addRemainCost = 0L;
-            long foreachCost = 0L;
-            long mergeCost = 0L;
-            long binarySearchCost = 0L;
-
             for (int i = from; i < to; i++) {
                 int fid = sampleFeats[i];
                 if (featureRows[fid - featLo].isDefined()) {
-                    long t;
-                    t = System.currentTimeMillis();
                     FeatureRow featRow = featureRows[fid - featLo].get();
                     int[] indices = featRow.indices();
                     int[] bins = featRow.bins();
                     int nnz = indices.length;
-                    prepareCost += System.currentTimeMillis() - t;
                     if (nnz != 0) {
                         // 1. allocate histogram
-                        t = System.currentTimeMillis();
                         int numBin = featureInfo.getNumBin(fid);
                         Histogram hist = new Histogram(numBin, param.numClass, param.fullHessian);
-                        allocCost += System.currentTimeMillis() - t;
                         // 2. loop non-zero instances, accumulate to histogram
                         if (true) {
                         //if (nnz <= nodeEnd - nodeStart + 1) { // loop all nnz of current feature
@@ -337,12 +281,9 @@ public class HistBuilder {
                                 int insId = indices[j];
                                 if (nodeStart <= insPos[insId] && insPos[insId] <= nodeEnd) {
                                     int binId = bins[j];
-                                    t = System.currentTimeMillis();
                                     hist.accumulate(binId, gradPairs[insId]);
-                                    accCost += System.currentTimeMillis() - t;
                                 }
                             }
-                            foreachCost += System.currentTimeMillis() - t2;
                         } else { // for all instance on this node, binary search in feature row
                             long t2 = System.currentTimeMillis();
                             for (int j = nodeStart; j <= nodeEnd; j++) {
@@ -350,22 +291,15 @@ public class HistBuilder {
                                 int index = Arrays.binarySearch(indices, insId);
                                 if (index >= 0) {
                                     int binId = bins[index];
-                                    t = System.currentTimeMillis();
                                     hist.accumulate(binId, gradPairs[insId]);
-                                    accCost += System.currentTimeMillis() - t;
                                 }
                             }
-                            binarySearchCost += System.currentTimeMillis() - t2;
                         }
                         // 3. add remaining grad and hess to default bin
-                        t = System.currentTimeMillis();
                         GradPair taken = hist.sum();
                         GradPair remain = sumGradPair.subtract(taken);
                         int defaultBin = featureInfo.getDefaultBin(fid);
-                        addRemainCost += System.currentTimeMillis() - t;
-                        t = System.currentTimeMillis();
                         hist.accumulate(defaultBin, remain);
-                        accCost += System.currentTimeMillis() - t;
                         histograms[i] = Option.apply(hist);
                     } else {
                         histograms[i] = Option.empty();
@@ -374,15 +308,6 @@ public class HistBuilder {
                     histograms[i] = Option.empty();
                 }
             }
-
-            //LOG.info(String.format("Build hist cost %d ms, prepare[%d], alloc[%d], acc[%d], addRemain[%d]," +
-            //        "foreach[%d], binarySearch[%d]", System.currentTimeMillis() - startTime,
-            //        prepareCost, allocCost, accCost, addRemainCost, foreachCost, binarySearchCost));
-
-//            LOG.info(String.format("Build hist cost %d ms, prepare[%d], alloc[%d], acc[%d], addRemain[%d]," +
-//                            "merge[%d]", System.currentTimeMillis() - startTime,
-//                    prepareCost, allocCost, accCost, addRemainCost, mergeCost));
-
             return null;
         }
     }

@@ -57,6 +57,50 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
 
   private[learner] val activeNodes = ArrayBuffer[Int]()
 
+  private[learner] val buildHistTime = new Array[Long](Maths.pow(2, param.maxDepth) - 1)
+  private[learner] val histSubtractTime = new Array[Long](Maths.pow(2, param.maxDepth) - 1)
+  private[learner] val findSplitTime = new Array[Long](Maths.pow(2, param.maxDepth) - 1)
+  private[learner] val getSplitResultTime = new Array[Long](Maths.pow(2, param.maxDepth) - 1)
+  private[learner] val splitNodeTime = new Array[Long](Maths.pow(2, param.maxDepth) - 1)
+
+  def timing[A](f: => A)(t: Long => Any): A = {
+    val t0 = System.currentTimeMillis()
+    val res = f
+    t(System.currentTimeMillis() - t0)
+    res
+  }
+
+  def reportTime(): String = {
+    val sb = new StringBuilder
+    for (depth <- 0 until param.maxDepth) {
+      val from = Maths.pow(2, depth) - 1
+      val until = Maths.pow(2, depth + 1) - 1
+      if (from < Maths.pow(2, param.maxDepth) - 1) {
+        sb.append(s"Layer${depth + 1}:\n")
+        sb.append(s"|buildHistTime: [${buildHistTime.slice(from, until).mkString(", ")}], " +
+          s"sum[${buildHistTime.slice(from, until).sum}]\n")
+        sb.append(s"|histSubtractTime: [${histSubtractTime.slice(from, until).mkString(", ")}], " +
+          s"sum[${histSubtractTime.slice(from, until).sum}]\n")
+        sb.append(s"|findSplitTime: [${findSplitTime.slice(from, until).mkString(", ")}], " +
+          s"sum[${findSplitTime.slice(from, until).sum}]\n")
+        sb.append(s"|getSplitResultTime: [${getSplitResultTime.slice(from, until).mkString(", ")}], " +
+          s"sum[${getSplitResultTime.slice(from, until).sum}]\n")
+        sb.append(s"|splitNodeTime: [${splitNodeTime.slice(from, until).mkString(", ")}], " +
+          s"sum[${splitNodeTime.slice(from, until).sum}]\n")
+      }
+    }
+    val res = sb.toString()
+    println(res)
+    for (i <- buildHistTime.indices) {
+      buildHistTime(i) = 0
+      histSubtractTime(i) = 0
+      findSplitTime(i) = 0
+      getSplitResultTime(i) = 0
+      splitNodeTime(i) = 0
+    }
+    res
+  }
+
   def createNewTree(): Unit = {
     // 1. create new tree
     val tree = new GBTTree(param)
@@ -102,7 +146,7 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
     splitResults.foreach {
       case (nid, result) =>
         splitNode(nid, result, bestSplits(nid))
-        if (2 * nid + 1 < storedHists.length) {
+        if (2 * nid + 1 < Maths.pow(2, param.maxDepth) - 1) {
           activeNodes += 2 * nid + 1
           activeNodes += 2 * nid + 2
         }
@@ -127,31 +171,31 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
           val parNid = Maths.parent(nid)
           val parHist = storedHists(parNid)
           if (curSize < sibSize) {
-            storedHists(nid) = histBuilder.buildHistogramsFP(
+            timing(storedHists(nid) = histBuilder.buildHistogramsFP(
               isFeatUsed, featLo, trainData, featureInfo, dataInfo,
               nid, sumGradPairs(cur)
-            )
-            storedHists(sibNid) = histBuilder.histSubtraction(
+            )) {t => buildHistTime(nid) = t}
+            timing(storedHists(sibNid) = histBuilder.histSubtraction(
               parHist, storedHists(nid), true
-            )
+            )) {t => histSubtractTime(sibNid) = t}
           } else {
-            storedHists(sibNid) = histBuilder.buildHistogramsFP(
+            timing(storedHists(sibNid) = histBuilder.buildHistogramsFP(
               isFeatUsed, featLo, trainData, featureInfo, dataInfo,
               sibNid, sumGradPairs(cur + 1)
-            )
-            storedHists(nid) = histBuilder.histSubtraction(
+            )) {t => histSubtractTime(sibNid) = t}
+            timing(storedHists(nid) = histBuilder.histSubtraction(
               parHist, storedHists(sibNid), true
-            )
+            )) {t => buildHistTime(nid) = t}
           }
           storedHists(parNid) = null
         }
         cur += 2
       } else {
         if (canSplits(cur)) {
-          storedHists(nid) = histBuilder.buildHistogramsFP(
+          timing(storedHists(nid) = histBuilder.buildHistogramsFP(
             isFeatUsed, featLo, trainData, featureInfo, dataInfo,
             nid, sumGradPairs(cur)
-          )
+          )) {t => buildHistTime(nid) = t}
         }
         cur += 1
       }
@@ -162,7 +206,7 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
     val res = canSplits.zipWithIndex.map {
       case (canSplit, i) =>
         val nid = nids(i)
-        if (canSplit) {
+        timing(if (canSplit) {
           val node = nodes(i)
           val hist = storedHists(nid)
           val sumGradPair = sumGradPairs(i)
@@ -172,7 +216,7 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
           (nid, split)
         } else {
           (nid, new GBTSplit)
-        }
+        }) {t => findSplitTime(nid) = t}
     }.filter(_._2.isValid(param.minSplitGain))
     println(s"Find splits cost ${System.currentTimeMillis() - findStart} ms")
     res
@@ -184,13 +228,14 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
     val splitFid = splitEntry.getFid
     if (featLo <= splitFid && splitFid < featHi) {
       val splits = featureInfo.getSplits(splitFid)
-      dataInfo.getSplitResult(nid, splitEntry, splits, trainData)
+      timing(dataInfo.getSplitResult(nid, splitEntry, splits, trainData)) {t => getSplitResultTime(nid) = t}
     } else {
       null
     }
   }
 
   def splitNode(nid: Int, splitResult: RangeBitSet, split: GBTSplit = null): Unit = {
+    timing {
     dataInfo.updatePos(nid, splitResult)
     val tree = forest.last
     val node = tree.getNode(nid)
@@ -217,7 +262,7 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
     } else {
       leftChild.setSumGradPair(split.getLeftGradPair)
       rightChild.setSumGradPair(split.getRightGradPair)
-    }
+    }} {t => splitNodeTime(nid) = t}
   }
 
   def canSplitNode(node: GBTNode): Boolean = {

@@ -5,10 +5,8 @@ import org.dma.gbdt4spark.algo.gbdt.learner.SparkFPGBDTTrainer
 import org.dma.gbdt4spark.common.Global.Conf._
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.util.Maths
-import org.slf4j.LoggerFactory
 
 object GBDT extends Serializable {
-  private val LOG = LoggerFactory.getLogger(GBDT.getClass)
 
   def main(args: Array[String]): Unit = {
     val conf = new SparkConf()
@@ -41,9 +39,12 @@ object GBDT extends Serializable {
 
     try {
       val trainer = new SparkFPGBDTTrainer(param)
-      val input = conf.get(ML_TRAIN_DATA_PATH)
-      val validRatio = conf.getDouble(ML_VALID_DATA_RATIO, DEFAULT_ML_VALID_DATA_RATIO)
-      trainer.loadData(input, validRatio)
+      //val input = conf.get(ML_TRAIN_DATA_PATH)
+      //val validRatio = conf.getDouble(ML_VALID_DATA_RATIO, DEFAULT_ML_VALID_DATA_RATIO)
+      //trainer.loadData(input, validRatio)
+      val trainInput = conf.get(ML_TRAIN_DATA_PATH)
+      val validInput = conf.get(ML_VALID_DATA_PATH)
+      trainer.initialize(trainInput, validInput)
       trainer.train()
     } catch {
       case e: Exception =>
@@ -54,6 +55,5 @@ object GBDT extends Serializable {
     }
 
   }
-
 
 }

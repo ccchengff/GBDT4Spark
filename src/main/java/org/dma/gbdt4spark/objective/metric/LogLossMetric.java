@@ -30,8 +30,8 @@ public class LogLossMetric implements EvalMetric {
 
     @Override
     public double evalOne(float pred, float label) {
-        double prob = Maths.fastSigmoid(pred);
-        return -(label * Math.log(prob) + (1 - label) * Math.log(1 - prob));
+        float prob = Maths.fastSigmoid(pred);
+        return -(label * Maths.fastLog(prob) + (1 - label) * Maths.fastLog(1 - prob));
     }
 
     @Override

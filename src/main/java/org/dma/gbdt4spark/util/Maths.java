@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Random;
 
 public class Maths {
-    private static class FastSigmoid {
+    private static class FastMaths {
         private final static int MAX_SIGMOID = 8;
         private final static int SIGMOID_TABLE_SIZE = 512;
         private final static int LOG_TABLE_SIZE = 512;
@@ -52,11 +52,19 @@ public class Maths {
     }
 
     public static float fastSigmoid(float x) {
-        return FastSigmoid.sigmoid(x);
+        return FastMaths.sigmoid(x);
     }
 
     public static double fastSigmoid(double x) {
-        return (double) FastSigmoid.sigmoid((float) x);
+        return (double) FastMaths.sigmoid((float) x);
+    }
+
+    public static float fastLog(float x) {
+        return FastMaths.log(x);
+    }
+
+    public static double fastLog(double x) {
+        return FastMaths.log((float) x);
     }
 
     public static int sqr(int x) {
@@ -169,6 +177,10 @@ public class Maths {
             return pow(a * a, b / 2); // even a=(a^2)^b/2
         else
             return a * pow(a * a, b / 2); // odd a=a*(a^2)^b/2
+    }
+
+    public static int idivCeil(int a, int b) {
+        return (a + b - 1) / b;
     }
 
     public static float[] unique(float[] array) {

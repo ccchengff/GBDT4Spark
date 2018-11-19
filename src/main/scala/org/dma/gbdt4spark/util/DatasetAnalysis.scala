@@ -201,7 +201,7 @@ object DatasetAnalysis {
     Maths.shuffle(shuffle)
     val bcShuffle = sc.broadcast(shuffle)
 
-    DataLoader.loadLibsvm(input, numFeature)
+    DataLoader.loadLibsvmDP(input, numFeature)
       .map(instance => {
         val kvs = collection.mutable.ArrayBuffer[(Int, Double)]()
         instance.feature.foreachActive((k, v) => kvs += ((bcShuffle.value(k), v)))

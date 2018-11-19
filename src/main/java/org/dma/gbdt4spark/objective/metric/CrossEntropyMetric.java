@@ -44,7 +44,7 @@ public class CrossEntropyMetric implements EvalMetric {
             sum += Math.exp(p);
         }
         double p = Math.exp(pred[(int) label]) / sum;
-        return -Math.log(Math.max(p, Maths.EPSILON));
+        return -Maths.fastLog(Math.max(p, Maths.EPSILON));
     }
 
     public static CrossEntropyMetric getInstance() {

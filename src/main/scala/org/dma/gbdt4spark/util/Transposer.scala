@@ -11,15 +11,12 @@ import org.dma.gbdt4spark.algo.gbdt.GBDTTrainer
 import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo
 import org.dma.gbdt4spark.common.Global.Conf._
 import org.dma.gbdt4spark.data.{FeatureRow, Instance, InstanceRow}
-import org.dma.gbdt4spark.logging.LoggerFactory
 import org.dma.gbdt4spark.sketch.HeapQuantileSketch
 import org.dma.gbdt4spark.tree.param.GBDTParam
 
 import scala.collection.mutable.ArrayBuffer
 
 object Transposer {
-  private val LOG = LoggerFactory.getLogger(Transposer.getClass)
-
   private val param = new GBDTParam
 
   type FR = (Array[Int], Array[Double])
@@ -62,7 +59,7 @@ object Transposer {
       case Some(row) => row.size
       case None => 0
     }.reduce(_+_)
-    LOG.info(s"#KV pairs: $numKV vs. $numKV2")
+    println(s"#KV pairs: $numKV vs. $numKV2")
   }
 
   def loadData(input: String, validRatio: Double)(implicit sc: SparkContext): RDD[Instance] = {
@@ -80,7 +77,7 @@ object Transposer {
     val numTranData = trainData.count().toInt
     val numValidData = validData.count().toInt
     fullDataset.unpersist()
-    LOG.info(s"Load data cost ${System.currentTimeMillis() - loadStart} ms, " +
+    println(s"Load data cost ${System.currentTimeMillis() - loadStart} ms, " +
       s"$numTranData train data, $numValidData valid data")
     trainData
   }
@@ -131,7 +128,7 @@ object Transposer {
     GBDTTrainer.ensureLabel(labels, param.numClass)
 
     val bcLabels = sc.broadcast(labels)
-    LOG.info(s"Collect labels cost ${System.currentTimeMillis() - transposeStart} ms")
+    println(s"Collect labels cost ${System.currentTimeMillis() - transposeStart} ms")
 
     // 1. transpose to FP dataset
     val toFPStart = System.currentTimeMillis()
@@ -163,7 +160,7 @@ object Transposer {
           featRows(fid) = (fid, null)
         }
       }
-      LOG.info(s"Local transpose cost ${System.currentTimeMillis() - startTime} ms")
+      println(s"Local transpose cost ${System.currentTimeMillis() - startTime} ms")
       featRows.iterator
     }).repartitionAndSortWithinPartitions(evenPartitioner)
       .mapPartitionsWithIndex((partId, iterator) => {
@@ -190,11 +187,11 @@ object Transposer {
             partFeatRows += partRow
           }
         }
-        LOG.info(s"Merge feature rows cost ${System.currentTimeMillis() - startTime} ms")
+        println(s"Merge feature rows cost ${System.currentTimeMillis() - startTime} ms")
         featureRows.iterator
       }).persist(StorageLevel.MEMORY_AND_DISK)
     require(fpData.count() == numFeature)
-    LOG.info(s"To FP cost ${System.currentTimeMillis() - toFPStart} ms")
+    println(s"To FP cost ${System.currentTimeMillis() - toFPStart} ms")
     // 2. splits
     val getSplitStart = System.currentTimeMillis()
     val bcParam = sc.broadcast(param)
@@ -216,12 +213,12 @@ object Transposer {
         }
         curFid += 1
       }
-      LOG.info(s"Create sketch and get split cost ${System.currentTimeMillis() - startTime} ms")
+      println(s"Create sketch and get split cost ${System.currentTimeMillis() - startTime} ms")
       splits.iterator
     }).collect()
       .foreach(s => splits(s._1) = s._2)
     val bcFeatureInfo = sc.broadcast(FeatureInfo(numFeature, splits))
-    LOG.info(s"Get split cost ${System.currentTimeMillis() - getSplitStart} ms")
+    println(s"Get split cost ${System.currentTimeMillis() - getSplitStart} ms")
     // 3. truncate
     val truncateStart = System.currentTimeMillis()
     val res = fpData.mapPartitionsWithIndex((partId, iterator) => {
@@ -243,13 +240,13 @@ object Transposer {
         curFid += 1
       }
       require(curFid == featHi, s"cur fid = $curFid, should be $featHi")
-      LOG.info(s"Truncate cost ${System.currentTimeMillis() - startTime} ms")
+      println(s"Truncate cost ${System.currentTimeMillis() - startTime} ms")
       featureRows.iterator
     }).persist(StorageLevel.MEMORY_AND_DISK)
-    LOG.info(s"Truncate cost ${System.currentTimeMillis() - truncateStart} ms")
+    println(s"Truncate cost ${System.currentTimeMillis() - truncateStart} ms")
     fpData.unpersist()
 
-    LOG.info(s"Transpose train data cost ${System.currentTimeMillis() - transposeStart} ms, " +
+    println(s"Transpose train data cost ${System.currentTimeMillis() - transposeStart} ms, " +
       s"feature edges: [${bcFeatureEdges.value.mkString(", ")}]")
     (res, bcFeatureInfo, bcLabels)
   }

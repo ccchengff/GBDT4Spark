@@ -3,8 +3,9 @@ package org.dma.gbdt4spark.algo.gbdt.learner
 import org.apache.spark.{SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
+import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo
 import org.dma.gbdt4spark.algo.gbdt.tree.GBTSplit
-import org.dma.gbdt4spark.data.Instance
+import org.dma.gbdt4spark.data.{Instance, VerticalPartition => VP}
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.util.{DataLoader, Maths, Transposer}
 
@@ -13,9 +14,62 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
 
   @transient private var workers: RDD[FPGBDTLearner] = _
 
+  def initialize(trainInput: String, validInput: String): Unit = {
+    val bcParam = sc.broadcast(param)
+
+    val loadStart = System.currentTimeMillis()
+    val train = DataLoader.loadLibsvmFP(trainInput,
+      param.numFeature, param.numWorker)
+      .persist(StorageLevel.MEMORY_AND_DISK)
+    val valid = DataLoader.loadLibsvmDP(validInput, param.numFeature)
+      .repartition(param.numWorker)
+      .persist(StorageLevel.MEMORY_AND_DISK)
+    val numTrain = train.map(_.labels.length).reduce(_+_) / param.numWorker
+    val numValid = valid.count()
+    println(s"load data cost ${System.currentTimeMillis() - loadStart} ms, " +
+      s"$numTrain train data, $numValid valid data")
+
+    val createFIStart = System.currentTimeMillis()
+    val splits = new Array[Array[Float]](param.numFeature)
+    train.mapPartitions(iterator =>
+      VP.getCandidateSplits(iterator.toSeq,
+        bcParam.value.numFeature, bcParam.value.numSplit).iterator
+    ).collect().foreach {
+      case (fid, fSplits) => splits(fid) = fSplits
+    }
+    val featureInfo = FeatureInfo(param.numFeature, splits)
+    val bcFeatureInfo = sc.broadcast(featureInfo)
+    println(s"Create feature info cost ${System.currentTimeMillis() - createFIStart} ms")
+
+    val initStart = System.currentTimeMillis()
+    val workers = train.zipPartitions(valid)(
+      (vpIter, validIter) => {
+        val (trainLabels, trainData) = VP.discretize(vpIter.toSeq, bcFeatureInfo.value)
+        val valid = validIter.toArray
+        val validLabels = valid.map(_.label.toFloat)
+        val validData = valid.map(_.feature)
+        Instance.ensureLabel(trainLabels, bcParam.value.numClass)
+        Instance.ensureLabel(validLabels, bcParam.value.numClass)
+        val worker = new FPGBDTLearner(TaskContext.getPartitionId,
+          bcParam.value, bcFeatureInfo.value,
+          trainData, trainLabels, validData, validLabels)
+        Iterator(worker)
+      }
+    ).cache()
+    workers.foreach(worker =>
+      println(s"Worker[${worker.learnerId}] initialization done. " +
+        s"Hyper-parameters:\n$param")
+    )
+    println(s"Initialize workers cost ${System.currentTimeMillis() - initStart} ms")
+
+    train.unpersist()
+    valid.unpersist()
+    this.workers = workers
+  }
+
   def loadData(input: String, validRatio: Double): Unit = {
     val loadStart = System.currentTimeMillis()
-    val data = DataLoader.loadLibsvm(input, param.numFeature)
+    val data = DataLoader.loadLibsvmDP(input, param.numFeature)
       .repartition(param.numWorker)
       .persist(StorageLevel.MEMORY_AND_DISK)
     val splits = data.randomSplit(Array(1.0 - validRatio, validRatio))
@@ -40,9 +94,13 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
         (trainIter, validIter) => {
           val learnerId = TaskContext.getPartitionId
           val valid = validIter.toArray
-          val worker = new FPGBDTLearner(learnerId, bcParam.value,
-            bcFeatureInfo.value, trainIter.toArray, bcLabels.value,
-            valid.map(_.feature), valid.map(_.label.toFloat))
+          val trainData = trainIter.toArray
+          val trainLabels = bcLabels.value
+          val validData = valid.map(_.feature)
+          val validLabels = valid.map(_.label.toFloat)
+          Instance.ensureLabel(validLabels, bcParam.value.numClass)
+          val worker = new FPGBDTLearner(learnerId, bcParam.value, bcFeatureInfo.value,
+            trainData, trainLabels, validData, validLabels)
           Iterator(worker)
         }
       ).cache()
@@ -119,7 +177,15 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
       println(s"Evaluation on valid data after ${treeId + 1} tree(s): $evalValidMsg")
       println(s"Tree[${treeId + 1}] Finish tree cost ${System.currentTimeMillis() - finishStart} ms")
 
-      println(s"${treeId + 1} tree(s) done, ${System.currentTimeMillis() - trainStart} ms elapsed")
+      val currentTime = System.currentTimeMillis()
+      println(s"Train tree cost ${currentTime - createStart} ms, " +
+        s"${treeId + 1} tree(s) done, ${currentTime - trainStart} ms elapsed")
+
+      workers.map(_.reportTime()).collect().zipWithIndex.foreach {
+        case (str, id) =>
+          println(s"========Time cost summation of worker[$id]========")
+          println(str)
+      }
     }
 
     // TODO: check equality

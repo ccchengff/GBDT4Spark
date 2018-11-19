@@ -1,13 +1,9 @@
 package org.dma.gbdt4spark.algo.gbdt.metadata
 
 import org.dma.gbdt4spark.util.Maths
-//import org.slf4j.LoggerFactory
-import org.dma.gbdt4spark.logging.LoggerFactory
 
 object FeatureInfo {
   private val ENUM_THRESHOLD: Int = 16
-
-  private val LOG = LoggerFactory.getLogger(FeatureInfo.getClass)
 
   def apply(numFeature: Int, splits: Array[Array[Float]]): FeatureInfo = {
     require(splits.length == numFeature)
@@ -35,7 +31,7 @@ object FeatureInfo {
     val empCnt = splits.count(_ == null)
     val numCnt = (splits, isCategorical).zipped.count(p => p._1 != null && !p._2)
     val catCnt = (splits, isCategorical).zipped.count(p => p._1 != null && p._2)
-    LOG.info(s"Count: empty[$empCnt], numerical[$numCnt], categorical[$catCnt]")
+    println(s"Count: empty[$empCnt], numerical[$numCnt], categorical[$catCnt]")
 
     new FeatureInfo(isCategorical, numBin, splits, defaultBins)
   }
@@ -61,7 +57,6 @@ object FeatureInfo {
 
 case class FeatureInfo(featTypes: Array[Boolean], numBin: Array[Int],
                        splits: Array[Array[Float]], defaultBins: Array[Int]) {
-  def nnz(fid: Int): Int = ???
 
   def isCategorical(fid: Int) = featTypes(fid)
 

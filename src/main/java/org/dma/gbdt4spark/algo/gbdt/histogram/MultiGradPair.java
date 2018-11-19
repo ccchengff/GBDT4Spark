@@ -33,10 +33,24 @@ public class MultiGradPair implements GradPair, Serializable {
             this.hess[i] += hess[i];
     }
 
+    public void plusBy(double[] grad, double[] hess) {
+        for (int i = 0; i < this.grad.length; i++)
+            this.grad[i] += grad[i];
+        for (int i = 0; i < this.hess.length; i++)
+            this.hess[i] += hess[i];
+    }
+
     @Override
     public void subtractBy(GradPair gradPair) {
         double[] grad = ((MultiGradPair) gradPair).grad;
         double[] hess = ((MultiGradPair) gradPair).hess;
+        for (int i = 0; i < this.grad.length; i++)
+            this.grad[i] -= grad[i];
+        for (int i = 0; i < this.hess.length; i++)
+            this.hess[i] -= hess[i];
+    }
+
+    public void subtractBy(double[] grad, double[] hess) {
         for (int i = 0; i < this.grad.length; i++)
             this.grad[i] -= grad[i];
         for (int i = 0; i < this.hess.length; i++)
@@ -50,10 +64,22 @@ public class MultiGradPair implements GradPair, Serializable {
         return res;
     }
 
+    public GradPair plus(double[] grad, double[] hess) {
+        MultiGradPair res = this.copy();
+        res.plusBy(grad, hess);
+        return res;
+    }
+
     @Override
     public GradPair subtract(GradPair gradPair) {
         GradPair res = this.copy();
         res.subtractBy(gradPair);
+        return res;
+    }
+
+    public GradPair subtract(double[] grad, double[] hess) {
+        MultiGradPair res = this.copy();
+        res.plusBy(grad, hess);
         return res;
     }
 

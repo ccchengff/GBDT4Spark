@@ -21,10 +21,20 @@ public class BinaryGradPair implements GradPair, Serializable {
         this.hess += ((BinaryGradPair) gradPair).hess;
     }
 
+    public void plusBy(double grad, double hess) {
+        this.grad += grad;
+        this.hess += hess;
+    }
+
     @Override
     public void subtractBy(GradPair gradPair) {
         this.grad -= ((BinaryGradPair) gradPair).grad;
         this.hess -= ((BinaryGradPair) gradPair).hess;
+    }
+
+    public void subtractBy(double grad, double hess) {
+        this.grad -= grad;
+        this.hess -= hess;
     }
 
     @Override
@@ -34,11 +44,19 @@ public class BinaryGradPair implements GradPair, Serializable {
         return res;
     }
 
+    public GradPair plus(double grad, double hess) {
+        return new BinaryGradPair(this.grad + grad, this.hess + hess);
+    }
+
     @Override
     public GradPair subtract(GradPair gradPair) {
         GradPair res = this.copy();
         res.subtractBy(gradPair);
         return res;
+    }
+
+    public GradPair subtract(double grad, double hess) {
+        return new BinaryGradPair(this.grad - grad, this.hess - hess);
     }
 
     @Override

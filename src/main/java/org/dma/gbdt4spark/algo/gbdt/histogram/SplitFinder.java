@@ -84,8 +84,8 @@ public class SplitFinder {
         GradPair rightStat = sumGradPair.copy();
         GradPair bestLeftStat = null, bestRightStat = null;
         for (int i = 0; i < histogram.getNumBin() - 1; i++) {
-            leftStat.plusBy(histogram.get(i));
-            rightStat.subtractBy(histogram.get(i));
+            histogram.plusTo(leftStat, i);
+            histogram.subtractTo(rightStat, i);
             if (leftStat.satisfyWeight(param) && rightStat.satisfyWeight(param)) {
                 float lossChg = leftStat.calcGain(param) + rightStat.calcGain(param)
                         - nodeGain - param.regLambda;
