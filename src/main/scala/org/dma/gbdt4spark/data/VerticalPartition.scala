@@ -29,10 +29,10 @@ object VerticalPartition {
   }
 
   def discretize(partitions: Seq[VerticalPartition],
-                 featureInfo: FeatureInfo): (Array[Float], Array[InstanceRow]) = {
+                 featureInfo: FeatureInfo): (Array[Float], DataSet) = {
     val numInstance = partitions.map(_.labels.length).sum
     val labels = new Array[Float](numInstance)
-    val instances = new Array[InstanceRow](numInstance)
+    val dataset = new DataSet(partitions.length, numInstance)
     var offset = 0
     partitions.sortBy(_.originPartId)
       .foreach(partition => {
@@ -41,21 +41,17 @@ object VerticalPartition {
         val partIndexEnd = partition.indexEnd
         val partIndices = partition.indices
         val partValues = partition.values
-        var partOffset = 0
-        for (i <- 0 until partSize) {
-          val insNNZ = partIndexEnd(i) - partOffset
-          val indices = partIndices.slice(partOffset, partIndexEnd(i))
-          val bins = new Array[Int](insNNZ)
-          for (j <- 0 until insNNZ) {
-            bins(j) = Maths.indexOf(featureInfo.getSplits(indices(j)),
-              partValues(partOffset + j))
-          }
-          partOffset += insNNZ
-          instances(offset + i) = InstanceRow(indices, bins)
+        val partBins = new Array[Int](partIndices.length)
+        for (i <- partIndices.indices) {
+          partBins(i) = Maths.indexOf(featureInfo.getSplits(
+            partIndices(i)), partValues(i))
         }
+        dataset.setPartition(partition.originPartId, partIndices, partBins, partIndexEnd)
         offset += partSize
+        println(s"OriPart[${partition.originPartId}] has $partSize instances, $numInstance in total")
       })
-    (labels, instances)
+    require(offset == numInstance)
+    (labels, dataset)
   }
 }
 

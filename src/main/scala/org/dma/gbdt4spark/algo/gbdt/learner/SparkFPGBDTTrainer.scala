@@ -100,7 +100,7 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
           val validLabels = valid.map(_.label.toFloat)
           Instance.ensureLabel(validLabels, bcParam.value.numClass)
           val worker = new FPGBDTLearner(learnerId, bcParam.value, bcFeatureInfo.value,
-            trainData, trainLabels, validData, validLabels)
+            null, trainLabels, validData, validLabels)
           Iterator(worker)
         }
       ).cache()

@@ -3,6 +3,7 @@ package org.dma.gbdt4spark.algo.gbdt.histogram;
 import com.google.common.base.Preconditions;
 import org.dma.gbdt4spark.algo.gbdt.metadata.DataInfo;
 import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo;
+import org.dma.gbdt4spark.data.DataSet;
 import org.dma.gbdt4spark.data.FeatureRow;
 import org.dma.gbdt4spark.data.InstanceRow;
 import org.dma.gbdt4spark.tree.param.GBDTParam;
@@ -22,6 +23,7 @@ public class HistBuilder {
     private static final int MIN_INSTANCE_PER_THREAD = 10000;
     private ExecutorService threadPool;
     private FPBuilderThread[] fpThreads;
+    private FPBuilderThread2[] fpThreads2;
 
     public HistBuilder(final GBDTParam param) {
         this.param = param;
@@ -30,6 +32,7 @@ public class HistBuilder {
             this.fpThreads = new FPBuilderThread[param.numThread];
             for (int threadId = 0; threadId < param.numThread; threadId++) {
                 this.fpThreads[threadId] = new FPBuilderThread(threadId, param);
+                this.fpThreads2[threadId] = new FPBuilderThread2(threadId, param);
             }
         }
     }
@@ -75,16 +78,58 @@ public class HistBuilder {
         }
         for (int posId = from; posId < to; posId++) {
             int insId = nodeToIns[posId];
-            InstanceRow ins = instanceRows[insId];
-            int[] indices = ins.indices();
-            int[] bins = ins.bins();
-            int nnz = indices.length;
-            for (int j = 0; j < nnz; j++) {
-                int fid = indices[j];
-                if (isFeatUsed[fid - featLo]) {
-                    histograms[fid - featLo].accumulate(bins[j], gradPairs[insId]);
-                }
-            }
+            instanceRows[insId].accumulate(histograms, gradPairs[insId], isFeatUsed, featLo);
+//            InstanceRow ins = instanceRows[insId];
+//            int[] indices = ins.indices();
+//            int[] bins = ins.bins();
+//            int nnz = indices.length;
+//            for (int j = 0; j < nnz; j++) {
+//                int fid = indices[j];
+//                if (isFeatUsed[fid - featLo]) {
+//                    histograms[fid - featLo].accumulate(bins[j], gradPairs[insId]);
+//                }
+//            }
+        }
+        return histograms;
+    }
+
+    private static class FPBuilderThread2 implements Callable<Histogram[]> {
+        int threadId;
+        GBDTParam param;
+        boolean[] isFeatUsed;
+        int featLo;
+        FeatureInfo featureInfo;
+        DataSet dataset;
+        GradPair[] gradPairs;
+        int[] nodeToIns;
+        int from, to;
+
+        public FPBuilderThread2(int threadId, GBDTParam param) {
+            this.threadId = threadId;
+            this.param = param;
+        }
+
+        @Override
+        public Histogram[] call() throws Exception {
+            return sparseBuildFP2(param, isFeatUsed, featLo, featureInfo, dataset,
+                    gradPairs, nodeToIns, from, to);
+        }
+    }
+
+    private static Histogram[] sparseBuildFP2(GBDTParam param, boolean[] isFeatUsed,
+                                             int featLo, FeatureInfo featureInfo,
+                                             DataSet dataset, GradPair[] gradPairs,
+                                             int[] nodeToIns, int from, int to) {
+        Histogram[] histograms = new Histogram[isFeatUsed.length];
+        for (int i = 0; i < isFeatUsed.length; i++) {
+            if (isFeatUsed[i])
+                histograms[i] = new Histogram(featureInfo.getNumBin(featLo + i),
+                        param.numClass, param.fullHessian);
+        }
+        for (int posId = from; posId < to; posId++) {
+            int insId = nodeToIns[posId];
+            dataset.accumulate(histograms, insId, gradPairs[insId], isFeatUsed, featLo);
+
         }
         return histograms;
     }
@@ -135,6 +180,69 @@ public class HistBuilder {
                 GradPair remain = sumGradPair.subtract(taken);
                 int defaultBin = featureInfo.getDefaultBin(featLo + i);
                 res[i].accumulate(defaultBin, remain);
+            }
+        }
+        return res;
+    }
+
+    public Histogram[] buildHistogramsFP(boolean[] isFeatUsed, int featLo, DataSet dataset,
+                                         FeatureInfo featureInfo, DataInfo dataInfo,
+                                         int nid, GradPair sumGradPair, Histogram[] subtract) throws Exception {
+        int nodeStart = dataInfo.getNodePosStart(nid);
+        int nodeEnd = dataInfo.getNodePosEnd(nid);
+        GradPair[] gradPairs = dataInfo.gradPairs();
+        int[] nodeToIns = dataInfo.nodeToIns();
+
+        Histogram[] res;
+        if (param.numThread <= 1 || nodeEnd - nodeStart + 1 <= MIN_INSTANCE_PER_THREAD) {
+            res = sparseBuildFP2(param, isFeatUsed, featLo, featureInfo, dataset,
+                    gradPairs, nodeToIns, nodeStart, nodeEnd);
+        } else {
+            int actualNumThread = Math.min(param.numThread,
+                    Maths.idivCeil(nodeEnd - nodeStart + 1, MIN_INSTANCE_PER_THREAD));
+            Future[] futures = new Future[actualNumThread];
+            int avg = (nodeEnd - nodeStart + 1) / actualNumThread;
+            int from = nodeStart, to = nodeStart + avg;
+            for (int threadId = 0; threadId < actualNumThread; threadId++) {
+                FPBuilderThread2 builder = fpThreads2[threadId];
+                builder.isFeatUsed = isFeatUsed;
+                builder.featLo = featLo;
+                builder.featureInfo = featureInfo;
+                builder.dataset = dataset;
+                builder.gradPairs = gradPairs;
+                builder.nodeToIns = nodeToIns;
+                builder.from = from;
+                builder.to = to;
+                from = to;
+                to = Math.min(from + avg, nodeEnd + 1);
+                futures[threadId] = threadPool.submit(builder);
+            }
+            res = (Histogram[]) futures[0].get();
+            for (int threadId = 1; threadId < actualNumThread; threadId++) {
+                Histogram[] hist = (Histogram[]) futures[threadId].get();
+                for (int i = 0; i < res.length; i++)
+                    if (res[i] != null)
+                        res[i].plusBy(hist[i]);
+            }
+        }
+        if (subtract == null) {
+            for (int i = 0; i < res.length; i++) {
+                if (res[i] != null) {
+                    GradPair taken = res[i].sum();
+                    GradPair remain = sumGradPair.subtract(taken);
+                    int defaultBin = featureInfo.getDefaultBin(featLo + i);
+                    res[i].accumulate(defaultBin, remain);
+                }
+            }
+        } else { // do hist subtraction here to be cache friendly
+            for (int i = 0; i < res.length; i++) {
+                if (res[i] != null) {
+                    GradPair taken = res[i].sum();
+                    GradPair remain = sumGradPair.subtract(taken);
+                    int defaultBin = featureInfo.getDefaultBin(featLo + i);
+                    res[i].accumulate(defaultBin, remain);
+                    subtract[i].subtractBy(res[i]);
+                }
             }
         }
         return res;

@@ -1,12 +1,11 @@
 package org.dma.gbdt4spark.algo.gbdt.metadata
 
 import org.dma.gbdt4spark.algo.gbdt.histogram.{BinaryGradPair, GradPair, MultiGradPair}
-import org.dma.gbdt4spark.data.{FeatureRow, InstanceRow}
+import org.dma.gbdt4spark.data.{DataSet, FeatureRow, InstanceRow}
 import org.dma.gbdt4spark.objective.loss.{BinaryLoss, Loss, MultiLoss}
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.tree.split.SplitEntry
 import org.dma.gbdt4spark.util._
-
 import java.{util => ju}
 
 object DataInfo {
@@ -153,9 +152,27 @@ case class DataInfo(predictions: Array[Float], weights: Array[Float], gradPairs:
     val fid = splitEntry.getFid
     for (posId <- nodePosStart(nid) to nodePosEnd(nid)) {
       val ins = instances(nodeToIns(posId))
-      val t = ju.Arrays.binarySearch(ins.indices, fid)
-      val flowTo = if (t >= 0) {
-        splitEntry.flowTo(splits(ins.bins(t)))
+      val binId = ins.get(fid)
+      val flowTo = if (binId >= 0) {
+        splitEntry.flowTo(splits(binId))
+      } else {
+        splitEntry.defaultTo()
+      }
+      if (flowTo == 1)
+        res.set(posId)
+    }
+    res
+  }
+
+  def getSplitResult(nid: Int, splitEntry: SplitEntry,
+                     splits: Array[Float], dataset: DataSet): RangeBitSet = {
+    val res = new RangeBitSet(nodePosStart(nid), nodePosEnd(nid))
+    val fid = splitEntry.getFid
+    for (posId <- nodePosStart(nid) to nodePosEnd(nid)) {
+      val insId = nodeToIns(posId)
+      val binId = dataset.get(insId, fid)
+      val flowTo = if (binId >= 0) {
+        splitEntry.flowTo(splits(binId))
       } else {
         splitEntry.defaultTo()
       }

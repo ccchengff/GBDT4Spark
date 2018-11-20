@@ -4,7 +4,7 @@ import org.apache.spark.ml.linalg.Vector
 import org.dma.gbdt4spark.algo.gbdt.histogram._
 import org.dma.gbdt4spark.algo.gbdt.metadata.{DataInfo, FeatureInfo}
 import org.dma.gbdt4spark.algo.gbdt.tree.{GBTNode, GBTSplit, GBTTree}
-import org.dma.gbdt4spark.data.InstanceRow
+import org.dma.gbdt4spark.data.DataSet
 import org.dma.gbdt4spark.objective.ObjectiveFactory
 import org.dma.gbdt4spark.objective.metric.EvalMetric
 import org.dma.gbdt4spark.tree.param.GBDTParam
@@ -17,11 +17,11 @@ import scala.util.Random
 import java.{util => ju}
 
 class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: FeatureInfo,
-                    _trainData: Array[InstanceRow], _labels: Array[Float],
+                    _trainData: DataSet, _labels: Array[Float],
                     _validData: Array[Vector], _validLabel: Array[Float]) {
   @transient private[learner] val forest = ArrayBuffer[GBTTree]()
 
-  @transient private val trainData: Array[InstanceRow] = _trainData
+  @transient private val trainData: DataSet = _trainData
   @transient private val labels: Array[Float] = _labels
   @transient private val validData: Array[Vector] = _validData
   @transient private val validLabels: Array[Float] = _validLabel
@@ -171,21 +171,35 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
           val parNid = Maths.parent(nid)
           val parHist = storedHists(parNid)
           if (curSize < sibSize) {
-            timing(storedHists(nid) = histBuilder.buildHistogramsFP(
-              isFeatUsed, featLo, trainData, featureInfo, dataInfo,
-              nid, sumGradPairs(cur)
-            )) {t => buildHistTime(nid) = t}
-            timing(storedHists(sibNid) = histBuilder.histSubtraction(
-              parHist, storedHists(nid), true
-            )) {t => histSubtractTime(sibNid) = t}
+            timing{
+              storedHists(nid) = histBuilder.buildHistogramsFP(
+                isFeatUsed, featLo, trainData, featureInfo, dataInfo,
+                nid, sumGradPairs(cur), parHist
+              )
+              storedHists(sibNid) = parHist
+            } {t => buildHistTime(nid) = t}
+//            timing(storedHists(nid) = histBuilder.buildHistogramsFP(
+//              isFeatUsed, featLo, trainData, featureInfo, dataInfo,
+//              nid, sumGradPairs(cur)
+//            )) {t => buildHistTime(nid) = t}
+//            timing(storedHists(sibNid) = histBuilder.histSubtraction(
+//              parHist, storedHists(nid), true
+//            )) {t => histSubtractTime(sibNid) = t}
           } else {
-            timing(storedHists(sibNid) = histBuilder.buildHistogramsFP(
-              isFeatUsed, featLo, trainData, featureInfo, dataInfo,
-              sibNid, sumGradPairs(cur + 1)
-            )) {t => histSubtractTime(sibNid) = t}
-            timing(storedHists(nid) = histBuilder.histSubtraction(
-              parHist, storedHists(sibNid), true
-            )) {t => buildHistTime(nid) = t}
+            timing {
+              storedHists(sibNid) = histBuilder.buildHistogramsFP(
+                isFeatUsed, featLo, trainData, featureInfo, dataInfo,
+                sibNid, sumGradPairs(cur + 1), parHist
+              )
+              storedHists(nid) = parHist
+            } {t => buildHistTime(sibNid) = t}
+//            timing(storedHists(sibNid) = histBuilder.buildHistogramsFP(
+//              isFeatUsed, featLo, trainData, featureInfo, dataInfo,
+//              sibNid, sumGradPairs(cur + 1)
+//            )) {t => histSubtractTime(sibNid) = t}
+//            timing(storedHists(nid) = histBuilder.histSubtraction(
+//              parHist, storedHists(sibNid), true
+//            )) {t => buildHistTime(nid) = t}
           }
           storedHists(parNid) = null
         }
@@ -194,7 +208,7 @@ class FPGBDTLearner(val learnerId: Int, val param: GBDTParam, _featureInfo: Feat
         if (canSplits(cur)) {
           timing(storedHists(nid) = histBuilder.buildHistogramsFP(
             isFeatUsed, featLo, trainData, featureInfo, dataInfo,
-            nid, sumGradPairs(cur)
+            nid, sumGradPairs(cur), null
           )) {t => buildHistTime(nid) = t}
         }
         cur += 1
