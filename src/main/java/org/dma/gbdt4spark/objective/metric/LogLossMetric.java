@@ -18,14 +18,36 @@ public class LogLossMetric implements EvalMetric {
     }
 
     @Override
-    public double eval(float[] preds, float[] labels) {
+    public double sum(float[] preds, float[] labels) {
+        return sum(preds, labels, 0, labels.length);
+    }
+
+    @Override
+    public double sum(float[] preds, float[] labels, int start, int end) {
         Preconditions.checkArgument(preds.length == labels.length,
                 "LogLossMetric should be used for binary-label classification");
         double loss = 0.0;
-        for (int i = 0; i < preds.length; i++) {
+        for (int i = start; i < end; i++) {
             loss += evalOne(preds[i], labels[i]);
         }
-        return loss / labels.length;
+        return loss;
+    }
+
+    @Override
+    public double avg(double sum, int num) {
+        return sum / num;
+    }
+
+    @Override
+    public double eval(float[] preds, float[] labels) {
+        return avg(sum(preds, labels), labels.length);
+//        Preconditions.checkArgument(preds.length == labels.length,
+//                "LogLossMetric should be used for binary-label classification");
+//        double loss = 0.0;
+//        for (int i = 0; i < preds.length; i++) {
+//            loss += evalOne(preds[i], labels[i]);
+//        }
+//        return loss / labels.length;
     }
 
     @Override

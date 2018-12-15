@@ -14,21 +14,50 @@ public class RMSEMetric implements EvalMetric {
     }
 
     @Override
-    public double eval(float[] preds, float[] labels) {
+    public double sum(float[] preds, float[] labels) {
+        return sum(preds, labels, 0, labels.length);
+    }
+
+    @Override
+    public double sum(float[] preds, float[] labels, int start, int end) {
         double errSum = 0.0f;
         if (preds.length == labels.length) {
-            for (int i = 0; i < preds.length; i++) {
+            for (int i = start; i < end; i++) {
                 errSum += evalOne(preds[i], labels[i]);
             }
         } else {
             int numLabel = preds.length / labels.length;
             float[] pred = new float[numLabel];
-            for (int i = 0; i < labels.length; i++) {
+            for (int i = start; i < end; i++) {
                 System.arraycopy(preds, i * numLabel, pred, 0, numLabel);
                 errSum += evalOne(pred, labels[i]);
             }
         }
-        return (float) Math.sqrt(errSum / labels.length);
+        return errSum;
+    }
+
+    @Override
+    public double avg(double sum, int num) {
+        return Math.sqrt(sum / num);
+    }
+
+    @Override
+    public double eval(float[] preds, float[] labels) {
+        return avg(sum(preds, labels), labels.length);
+//        double errSum = 0.0f;
+//        if (preds.length == labels.length) {
+//            for (int i = 0; i < preds.length; i++) {
+//                errSum += evalOne(preds[i], labels[i]);
+//            }
+//        } else {
+//            int numLabel = preds.length / labels.length;
+//            float[] pred = new float[numLabel];
+//            for (int i = 0; i < labels.length; i++) {
+//                System.arraycopy(preds, i * numLabel, pred, 0, numLabel);
+//                errSum += evalOne(pred, labels[i]);
+//            }
+//        }
+//        return Math.sqrt(errSum / labels.length);
     }
 
     @Override

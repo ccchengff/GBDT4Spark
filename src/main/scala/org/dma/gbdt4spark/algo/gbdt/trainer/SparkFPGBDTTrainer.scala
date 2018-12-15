@@ -1,0 +1,463 @@
+package org.dma.gbdt4spark.algo.gbdt.trainer
+
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.rdd.RDD
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.{Partitioner, SparkConf, SparkContext, TaskContext}
+import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset._
+import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset
+import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo
+import org.dma.gbdt4spark.algo.gbdt.tree.GBTSplit
+import org.dma.gbdt4spark.common.Global.Conf._
+import org.dma.gbdt4spark.data.Instance
+import org.dma.gbdt4spark.objective.ObjectiveFactory
+import org.dma.gbdt4spark.sketch.HeapQuantileSketch
+import org.dma.gbdt4spark.tree.param.GBDTParam
+import org.dma.gbdt4spark.util.{DataLoader, Maths}
+
+import scala.collection.mutable.{ArrayBuilder => AB}
+
+object SparkFPGBDTTrainer {
+
+  def main(args: Array[String]): Unit = {
+    val conf = new SparkConf()
+    implicit val sc = SparkContext.getOrCreate(conf)
+
+    val param = new GBDTParam
+    param.numClass = conf.getInt(ML_NUM_CLASS, DEFAULT_ML_NUM_CLASS)
+    param.numFeature = conf.get(ML_NUM_FEATURE).toInt
+    param.featSampleRatio = conf.getDouble(ML_FEATURE_SAMPLE_RATIO, DEFAULT_ML_FEATURE_SAMPLE_RATIO).toFloat
+    param.numWorker = conf.get(ML_NUM_WORKER).toInt
+    param.numThread = conf.getInt(ML_NUM_THREAD, DEFAULT_ML_NUM_THREAD)
+    param.lossFunc = conf.get(ML_LOSS_FUNCTION)
+    param.evalMetrics = conf.get(ML_EVAL_METRIC, DEFAULT_ML_EVAL_METRIC).split(",").map(_.trim).filter(_.nonEmpty)
+    param.learningRate = conf.getDouble(ML_LEARN_RATE, DEFAULT_ML_LEARN_RATE).toFloat
+    param.histSubtraction = conf.getBoolean(ML_GBDT_HIST_SUBTRACTION, DEFAULT_ML_GBDT_HIST_SUBTRACTION)
+    param.lighterChildFirst = conf.getBoolean(ML_GBDT_LIGHTER_CHILD_FIRST, DEFAULT_ML_GBDT_LIGHTER_CHILD_FIRST)
+    param.fullHessian = conf.getBoolean(ML_GBDT_FULL_HESSIAN, DEFAULT_ML_GBDT_FULL_HESSIAN)
+    param.numSplit = conf.getInt(ML_GBDT_SPLIT_NUM, DEFAULT_ML_GBDT_SPLIT_NUM)
+    param.numTree = conf.getInt(ML_GBDT_TREE_NUM, DEFAULT_ML_GBDT_TREE_NUM)
+    param.maxDepth = conf.getInt(ML_GBDT_MAX_DEPTH, DEFAULT_ML_GBDT_MAX_DEPTH)
+    val maxNodeNum = Maths.pow(2, param.maxDepth + 1) - 1
+    param.maxNodeNum = conf.getInt(ML_GBDT_MAX_NODE_NUM, maxNodeNum) min maxNodeNum
+    param.minChildWeight = conf.getDouble(ML_GBDT_MIN_CHILD_WEIGHT, DEFAULT_ML_GBDT_MIN_CHILD_WEIGHT).toFloat
+    param.minNodeInstance = conf.getInt(ML_GBDT_MIN_NODE_INSTANCE, DEFAULT_ML_GBDT_MIN_NODE_INSTANCE)
+    param.minSplitGain = conf.getDouble(ML_GBDT_MIN_SPLIT_GAIN, DEFAULT_ML_GBDT_MIN_SPLIT_GAIN).toFloat
+    param.regAlpha = conf.getDouble(ML_GBDT_REG_ALPHA, DEFAULT_ML_GBDT_REG_ALPHA).toFloat
+    param.regLambda = conf.getDouble(ML_GBDT_REG_LAMBDA, DEFAULT_ML_GBDT_REG_LAMBDA).toFloat max 1.0f
+    param.maxLeafWeight = conf.getDouble(ML_GBDT_MAX_LEAF_WEIGHT, DEFAULT_ML_GBDT_MAX_LEAF_WEIGHT).toFloat
+    println(s"Hyper-parameters:\n$param")
+
+    try {
+      val trainer = new SparkFPGBDTTrainer(param)
+      val trainInput = conf.get(ML_TRAIN_DATA_PATH)
+      val validInput = conf.get(ML_VALID_DATA_PATH)
+      trainer.initialize(trainInput, validInput)
+      trainer.train()
+    } catch {
+      case e: Exception =>
+        println(e.toString)
+        e.printStackTrace()
+    } finally {
+      // while (1 + 1 == 2) {}
+    }
+  }
+
+  def balancedFeatureGrouping(numFeature: Int, numWorker: Int): (Array[Int], Array[Array[Int]]) = {
+    val fidToGroupId = new Array[Int](numFeature)
+    val buffers = new Array[AB.ofInt](numWorker)
+    for (partId <- 0 until numWorker) {
+      buffers(partId) = new AB.ofInt
+      buffers(partId).sizeHint((1.5 * numFeature / numWorker).toInt)
+    }
+    for (fid <- 0 until numFeature) {
+      val partId = fid % numWorker
+      fidToGroupId(fid) = partId
+      buffers(partId) += fid
+    }
+    val groupIdToFid = buffers.map(_.result())
+    (fidToGroupId, groupIdToFid)
+  }
+
+  def featureInfoOfGroup(featureInfo: FeatureInfo, groupId: Int,
+                         groupIdToFid: Array[Int]): FeatureInfo = {
+    val groupSize = groupIdToFid.length
+    val featTypes = new Array[Boolean](groupSize)
+    val numBin = new Array[Int](groupSize)
+    val splits = new Array[Array[Float]](groupSize)
+    val defaultBins = new Array[Int](groupSize)
+    groupIdToFid.view.zipWithIndex.foreach {
+      case (fid, newFid) =>
+        featTypes(newFid) = featureInfo.isCategorical(fid)
+        numBin(newFid) = featureInfo.getNumBin(fid)
+        splits(newFid) = featureInfo.getSplits(fid)
+        defaultBins(newFid) = featureInfo.getDefaultBin(fid)
+    }
+    FeatureInfo(featTypes, numBin, splits, defaultBins)
+  }
+}
+
+import SparkFPGBDTTrainer._
+class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
+  @transient implicit val sc = SparkContext.getOrCreate()
+
+  @transient private[gbdt] var bcFidToGroupId: Broadcast[Array[Int]] = _
+  @transient private[gbdt] var bcGroupIdToFid: Broadcast[Array[Array[Int]]] = _
+  @transient private[gbdt] var bcFidToNewFid: Broadcast[Array[Int]] = _
+  @transient private[gbdt] var bcGroupSizes: Broadcast[Array[Int]] = _
+  @transient private[gbdt] var bcFeatureInfo: Broadcast[FeatureInfo] = _
+
+  @transient private[gbdt] var workers: RDD[FPGBDTTrainer] = _
+
+  private[gbdt] var numTrain: Int = _
+  private[gbdt] var numValid: Int = _
+
+  def initialize(trainInput: String, validInput: String)
+                (implicit sc: SparkContext): Unit = {
+    val initStart = System.currentTimeMillis()
+    val bcParam = sc.broadcast(param)
+    val numFeature = param.numFeature
+    val numWorker = param.numWorker
+    val numSplit = param.numSplit
+
+    // 1. load data from hdfs
+    val loadStart = System.currentTimeMillis()
+    val trainDP = fromTextFile(trainInput, numFeature, Option(numWorker))
+      .mapPartitions(iterator => {
+        val partitions = iterator.toArray
+        val dataset = Dataset[Int, Float](partitions.length,
+          partitions.map(_.size).sum)
+        partitions.foreach(dataset.appendPartition)
+        Iterator(dataset)
+      }).persist(StorageLevel.MEMORY_AND_DISK)
+    val valid = DataLoader.loadLibsvmDP(validInput, param.numFeature)
+      .repartition(param.numWorker)
+      .persist(StorageLevel.MEMORY_AND_DISK)
+    val numTrain = trainDP.map(_.size).collect().sum
+    val numValid = valid.count().toInt
+    println(s"Load data cost ${System.currentTimeMillis() - loadStart} ms, " +
+      s"$numTrain train data, $numValid valid data")
+
+    // 2. collect labels, ensure 0-based indexed and broadcast
+    val labelStart = System.currentTimeMillis()
+    val labels = new Array[Float](numTrain)
+    val partLabels = trainDP.map(dataset =>
+      (TaskContext.getPartitionId(), dataset.getLabels)
+    ).collect()
+    require(partLabels.map(_._1).distinct.length == partLabels.length
+      && partLabels.map(_._2).forall(_.isDefined))
+    var offset = 0
+    partLabels.sortBy(_._1).map(_._2.get).foreach(partLabel => {
+      Array.copy(partLabel, 0, labels, offset, partLabel.length)
+      offset += partLabel.length
+    })
+    Instance.ensureLabel(labels, param.numClass)
+    val bcLabels = sc.broadcast(labels)
+    println(s"Collect labels cost ${System.currentTimeMillis() - labelStart} ms")
+
+    // 3. Partition features into groups,
+    // get feature id to group id mapping and inverted indexing
+    val featGroupStart = System.currentTimeMillis()
+    val (fidToGroupId, groupIdToFid) = balancedFeatureGrouping(numFeature, numWorker)
+    val fidToNewFid = new Array[Int](numFeature)
+    groupIdToFid.foreach(group => group.zipWithIndex.foreach {
+      case (fid, newFid) => fidToNewFid(fid) = newFid
+    })
+    val groupSizes = groupIdToFid.map(_.length)
+    val bcFidToGroupId = sc.broadcast(fidToGroupId)
+    val bcGroupIdToFid = sc.broadcast(groupIdToFid)
+    val bcFidToNewFid = sc.broadcast(fidToNewFid)
+    val bcGroupSizes = sc.broadcast(groupSizes)
+    println(s"Balanced feature grouping cost ${System.currentTimeMillis() - featGroupStart} ms")
+
+    // IdenticalPartitioner for shuffle operation
+    class IdenticalPartitioner extends Partitioner {
+      override def numPartitions: Int = numWorker
+
+      override def getPartition(key: Any): Int = {
+        val partId = key.asInstanceOf[Int]
+        require(partId < numWorker, s"Partition id $partId exceeds maximum partition $numWorker")
+        partId
+      }
+    }
+
+    // 4. build quantile sketches, get candidate splits,
+    // and create feature info, finally broadcast info to all workers
+    val getSplitsStart = System.currentTimeMillis()
+    val isCategorical = new Array[Boolean](numFeature)
+    val splits = new Array[Array[Float]](numFeature)
+    trainDP.flatMap(dataset => {
+      // build quantile sketches and partition them based on column groups
+      val sketchGroups = new Array[Array[HeapQuantileSketch]](numWorker)
+      val curIndex = new Array[Int](numWorker)
+      bcGroupSizes.value.zipWithIndex.foreach {
+        case (groupSize, groupId) =>
+          sketchGroups(groupId) = new Array[HeapQuantileSketch](groupSize)
+      }
+      val sketches = createSketches(dataset, numFeature)
+      val fidToGroupId = bcFidToGroupId.value
+      for (fid <- 0 until numFeature) {
+        val groupId = fidToGroupId(fid)
+        if (sketches(fid) == null || sketches(fid).isEmpty) {
+          sketchGroups(groupId)(curIndex(groupId)) = null
+        } else {
+          sketchGroups(groupId)(curIndex(groupId)) = sketches(fid)
+        }
+        curIndex(groupId) += 1
+      }
+      sketchGroups.zipWithIndex.map {
+        case (group, groupId) => (groupId, group)
+      }.iterator
+    }).partitionBy(new IdenticalPartitioner)
+      .mapPartitions(iterator => {
+        // merge quantile sketches and get quantiles as candidate splits
+        val (groupIds, sketchGroups) = iterator.toArray.unzip
+        val groupId = groupIds.head
+        require(groupIds.forall(_ == groupId))
+        val merged = sketchGroups.head
+        val tail = sketchGroups.tail
+        val size = merged.length
+        val splits = (0 until size).map(i => {
+          tail.foreach(group => {
+            if (merged(i) == null || merged(i).isEmpty) {
+              merged(i) = group(i)
+            } else {
+              merged(i).merge(group(i))
+            }
+          })
+          if (merged(i) != null && !merged(i).isEmpty) {
+            val distinct = merged(i).tryDistinct(FeatureInfo.ENUM_THRESHOLD)
+            if (distinct == null)
+              (false, Maths.unique(merged(i).getQuantiles(numSplit)))
+            else
+              (true, distinct)
+          } else {
+            (false, null)
+            //null
+          }
+        })
+        Iterator((groupId, splits))
+      }, preservesPartitioning = true)
+      .collect()
+      .foreach {
+        case (groupId, groupSplits) =>
+          // restore feature id based on column grouping info
+          // and set splits to corresponding feature
+          groupSplits.view.zipWithIndex.foreach {
+            case ((fIsCategorical, fSplits), index) =>
+              val fid = groupIdToFid(groupId)(index)
+              isCategorical(fid) = fIsCategorical
+              splits(fid) = fSplits
+          }
+//          groupSplits.view.zipWithIndex.foreach {
+//            case (fSplits, index) =>
+//              val fid = groupIdToFid(groupId)(index)
+//              splits(fid) = fSplits
+//          }
+      }
+    val featureInfo = FeatureInfo(isCategorical, splits)
+    // val featureInfo = FeatureInfo(numFeature, splits)
+    val bcFeatureInfo = sc.broadcast(featureInfo)
+    println(s"Create feature info cost ${System.currentTimeMillis() - getSplitsStart} ms")
+
+    // 5. Perform horizontal-to-vertical partitioning
+    val repartStart = System.currentTimeMillis()
+    val trainFP = trainDP.flatMap(dataset => {
+      // turn (feature index, feature value) into (feature index, bin index)
+      // and partition into column groups
+      columnGrouping(dataset, bcFidToGroupId.value,
+        bcFidToNewFid.value, bcFeatureInfo.value, numWorker)
+        .zipWithIndex.map {
+        case (group, groupId) => (groupId, (TaskContext.getPartitionId(), group))
+      }
+    }).partitionBy(new IdenticalPartitioner)
+      .mapPartitions(iterator => {
+        // merge same group into a dataset
+        val (groupIds, columnGroups) = iterator.toArray.unzip
+        val groupId = groupIds.head
+        require(groupIds.forall(_ == groupId))
+        val partIds = columnGroups.map(_._1)
+        require(partIds.distinct.length == partIds.length)
+        Iterator(Dataset[Short, Byte](columnGroups.sortBy(_._1).map(_._2)))
+        //Iterator(merge(columnGroups.sortBy(_._1).map(_._2)))
+      }).cache()
+    require(trainFP.map(_.size).collect().forall(_ == numTrain))
+    println(s"Repartitioning cost ${System.currentTimeMillis() - repartStart} ms")
+    trainDP.unpersist()
+
+    // 6. initialize worker
+    val workers = trainFP.zipPartitions(valid, preservesPartitioning = true)(
+      (trainIter, validIter) => {
+        val train = trainIter.toArray
+        require(train.length == 1)
+        val trainData = Dataset.restore(train.head)
+        val trainLabels = bcLabels.value
+        val valid = validIter.toArray
+        val validData = valid.map(_.feature)
+        val validLabels = valid.map(_.label.toFloat)
+        Instance.ensureLabel(validLabels, bcParam.value.numClass)
+        val workerId = TaskContext.getPartitionId
+        val worker = new FPGBDTTrainer(workerId, bcParam.value,
+          featureInfoOfGroup(bcFeatureInfo.value, workerId, bcGroupIdToFid.value(workerId)),
+          trainData, trainLabels, validData, validLabels)
+        Iterator(worker)
+      }
+    ).cache()
+    workers.foreach(worker =>
+      println(s"Worker[${worker.workerId}] initialization done"))
+
+//    // 6. initialize workers
+//    val workers = trainFP.zipPartitions(valid, preservesPartitioning = true)(
+//      (trainIter, validIter) => {
+//        val train = trainIter.toArray
+//        require(train.length == 1)
+//        val trainData = train.head
+//        val trainLabels = bcLabels.value
+//        val valid = validIter.toArray
+//        val validData = valid.map(_.feature)
+//        val validLabels = valid.map(_.label.toFloat)
+//        Instance.ensureLabel(validLabels, bcParam.value.numClass)
+//        val workerId = TaskContext.getPartitionId
+//        val worker = new FPGBDTTrainer(workerId, bcParam.value,
+//          featureInfoOfGroup(bcFeatureInfo.value, workerId, bcGroupIdToFid.value(workerId)),
+//          trainData, trainLabels, validData, validLabels)
+//        def sizeOf(obj: Object): Int = {
+//          import java.io._
+//          val byteOutputStream = new ByteArrayOutputStream()
+//          val objectOutputStream = new ObjectOutputStream(byteOutputStream)
+//          objectOutputStream.writeObject(obj)
+//          objectOutputStream.flush()
+//          objectOutputStream.close()
+//          byteOutputStream.toByteArray.length
+//        }
+//        println(s"Worker[$workerId] size[${sizeOf(worker)}]")
+//        Iterator(worker)
+//      }
+//    ).cache()
+
+//    trainDP.unpersist()
+    trainFP.unpersist()
+    valid.unpersist()
+    println(s"Initialization done, cost " +
+      s"${System.currentTimeMillis() - initStart} ms in total")
+
+    this.bcFidToGroupId = bcFidToGroupId
+    this.bcGroupIdToFid = bcGroupIdToFid
+    this.bcFidToNewFid = bcFidToNewFid
+    this.bcGroupSizes = bcGroupSizes
+    this.bcFeatureInfo = bcFeatureInfo
+    this.workers = workers
+    this.numTrain = numTrain
+    this.numValid = numValid
+  }
+
+  def train(): Unit = {
+    val trainStart = System.currentTimeMillis()
+
+    val loss = ObjectiveFactory.getLoss(param.lossFunc)
+    val evalMetrics = ObjectiveFactory.getEvalMetricsOrDefault(param.evalMetrics, loss)
+
+    for (treeId <- 0 until param.numTree) {
+      println(s"Start to train tree ${treeId + 1}")
+
+      // 1. create new tree
+      val createStart = System.currentTimeMillis()
+      workers.foreach(_.createNewTree())
+      val bestSplits = new Array[GBTSplit](Maths.pow(2, param.maxDepth) - 1)
+      val bestOwnerIds = new Array[Int](Maths.pow(2, param.maxDepth) - 1)
+      val bestAliasFids = new Array[Int](Maths.pow(2, param.maxDepth) - 1)
+      println(s"Tree[${treeId + 1}] Create new tree cost ${System.currentTimeMillis() - createStart} ms")
+
+      // 2. iteratively build one tree
+      var hasActive = true
+      while (hasActive) {
+        // 2.1. build histograms and find local best splits
+        val findStart = System.currentTimeMillis()
+        val nids = collection.mutable.TreeSet[Int]()
+        workers.map(worker => (worker.workerId, worker.findSplits()))
+            .collect().foreach {
+          case (workerId, splits) =>
+            splits.foreach {
+              case (nid, split) =>
+                nids += nid
+                if (bestSplits(nid) == null || bestSplits(nid).needReplace(split)) {
+                  val fidInWorker = split.getSplitEntry.getFid
+                  val trueFid = bcGroupIdToFid.value(workerId)(fidInWorker)
+                  split.getSplitEntry.setFid(trueFid)
+                  bestSplits(nid) = split
+                  bestOwnerIds(nid) = workerId
+                  bestAliasFids(nid) = fidInWorker
+                }
+            }
+        }
+        // (nid, ownerId, fidInWorker, split)
+        val validSplits = nids.toArray.map(nid => (nid,
+          bestOwnerIds(nid), bestAliasFids(nid), bestSplits(nid)))
+        println(s"Build histograms and find best splits cost " +
+          s"${System.currentTimeMillis() - findStart} ms, " +
+          s"${validSplits.length} node(s) to split")
+        if (validSplits.nonEmpty) {
+          // 2.2. get split results
+          val resultStart = System.currentTimeMillis()
+          val bcSplits = sc.broadcast(validSplits)
+          val splitResults = workers.flatMap(
+            _.getSplitResults(bcSplits.value).iterator
+          ).collect()
+          val bcSplitResults = sc.broadcast(splitResults)
+          println(s"Get split results cost ${System.currentTimeMillis() - resultStart} ms")
+          // 2.3. split nodes
+          val splitStart = System.currentTimeMillis()
+          hasActive = workers.map(_.splitNodes(bcSplitResults.value)).collect()(0)
+          println(s"Split nodes cost ${System.currentTimeMillis() - splitStart} ms")
+        } else {
+          // no active nodes
+          hasActive = false
+        }
+      }
+
+      // 3. finish tree
+      val finishStart = System.currentTimeMillis()
+      val trainMetrics = Array.fill(evalMetrics.length)(0.0)
+      val validMetrics = Array.fill(evalMetrics.length)(0.0)
+      workers.map(worker => {
+        worker.finishTree()
+        worker.evaluate()
+      }).collect().foreach(_.zipWithIndex.foreach {
+        case ((kind, train, valid), index) =>
+          require(kind == evalMetrics(index).getKind)
+          trainMetrics(index) += train
+          validMetrics(index) += valid
+      })
+      val evalTrainMsg = (evalMetrics, trainMetrics).zipped.map {
+        case (evalMetric, trainSum) =>
+          s"${evalMetric.getKind}[${evalMetric.avg(trainSum, numTrain)}]"
+      }.mkString(", ")
+      println(s"Evaluation on train data after ${treeId + 1} tree(s): $evalTrainMsg")
+      val evalValidMsg = (evalMetrics, validMetrics).zipped.map {
+        case (evalMetric, validSum) =>
+          s"${evalMetric.getKind}[${evalMetric.avg(validSum, numValid)}]"
+      }.mkString(", ")
+      println(s"Evaluation on valid data after ${treeId + 1} tree(s): $evalValidMsg")
+      println(s"Tree[${treeId + 1}] Finish tree cost ${System.currentTimeMillis() - finishStart} ms")
+
+      val currentTime = System.currentTimeMillis()
+      println(s"Train tree cost ${currentTime - createStart} ms, " +
+        s"${treeId + 1} tree(s) done, ${currentTime - trainStart} ms elapsed")
+
+      workers.map(_.reportTime()).collect().zipWithIndex.foreach {
+        case (str, id) =>
+          println(s"========Time cost summation of worker[$id]========")
+          println(str)
+      }
+    }
+
+    // TODO: check equality
+    val forest = workers.map(_.finalizeModel()).collect()(0)
+    forest.zipWithIndex.foreach {
+      case (tree, treeId) =>
+        println(s"Tree[${treeId + 1}] contains ${tree.size} nodes " +
+          s"(${(tree.size - 1) / 2 + 1} leaves)")
+    }
+  }
+
+}

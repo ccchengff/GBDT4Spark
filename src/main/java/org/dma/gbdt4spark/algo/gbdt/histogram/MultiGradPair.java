@@ -119,6 +119,35 @@ public class MultiGradPair implements GradPair, Serializable {
         return hess;
     }
 
+    public void setGrad(double[] grad) {
+        this.grad = grad;
+    }
+
+    public void setHess(double[] hess) {
+        this.hess = hess;
+    }
+
+    public void set(double[] grad, double[] hess) {
+        this.grad = grad;
+        this.hess = hess;
+    }
+
+    public void set(double[] grad, double[] hess, int offset) {
+        // numClass is usually small, so we do not use arraycopy here
+        for (int i = 0; i < this.grad.length; i++) {
+            this.grad[i] = grad[i + offset];
+            this.hess[i] = hess[i + offset];
+        }
+    }
+
+    public void set(double[] grad, int gradOffset, double[] hess, int hessOffset) {
+        // numClass is usually small, so we do not use arraycopy here
+        for (int i = 0; i < this.grad.length; i++)
+            this.grad[i] = grad[i + gradOffset];
+        for (int i = 0; i < this.hess.length; i++)
+            this.hess[i] = hess[i + hessOffset];
+    }
+
     @Override
     public String toString() {
         String gradStr = Arrays.toString(grad);

@@ -5,7 +5,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo
 import org.dma.gbdt4spark.algo.gbdt.tree.GBTSplit
-import org.dma.gbdt4spark.data.{Instance, VerticalPartition => VP}
+import org.dma.gbdt4spark.data.{Instance, HorizontalPartition => HP, VerticalPartition => VP}
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.util.{DataLoader, Maths, Transposer}
 
@@ -21,13 +21,22 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
     val train = DataLoader.loadLibsvmFP(trainInput,
       param.numFeature, param.numWorker)
       .persist(StorageLevel.MEMORY_AND_DISK)
+//    val train = DataLoader.loadLibsvmFP2(trainInput,
+//      param.numFeature, param.numWorker)
+//      .persist(StorageLevel.MEMORY_AND_DISK)
     val valid = DataLoader.loadLibsvmDP(validInput, param.numFeature)
       .repartition(param.numWorker)
       .persist(StorageLevel.MEMORY_AND_DISK)
     val numTrain = train.map(_.labels.length).reduce(_+_) / param.numWorker
     val numValid = valid.count()
-    println(s"load data cost ${System.currentTimeMillis() - loadStart} ms, " +
+    println(s"Load data cost ${System.currentTimeMillis() - loadStart} ms, " +
       s"$numTrain train data, $numValid valid data")
+
+//    val getLabelStart = System.currentTimeMillis()
+//    val labels = HP.getLabels(train)
+//    val bcLabels = sc.broadcast(labels)
+//    Instance.ensureLabel(labels, param.numClass)
+//    println(s"Get labels cost ${System.currentTimeMillis() - getLabelStart} ms")
 
     val createFIStart = System.currentTimeMillis()
     val splits = new Array[Array[Float]](param.numFeature)
@@ -37,11 +46,33 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
     ).collect().foreach {
       case (fid, fSplits) => splits(fid) = fSplits
     }
+//    HP.getCandidateSplits(train, param.numFeature, param.numSplit, param.numWorker)
+//      .foreach {
+//        case (fid, fSplits) => splits(fid) = fSplits
+//      }
     val featureInfo = FeatureInfo(param.numFeature, splits)
     val bcFeatureInfo = sc.broadcast(featureInfo)
     println(s"Create feature info cost ${System.currentTimeMillis() - createFIStart} ms")
 
     val initStart = System.currentTimeMillis()
+//    val workers = HP.toVPDataset(train, labels.length, param.numFeature,
+//      param.numWorker, bcFeatureInfo).zipPartitions(valid)(
+//      (trainIter, validIter) => {
+//        val train = trainIter.toArray
+//        require(train.length == 1)
+//        val trainData = train.head
+//        val trainLabels = bcLabels.value
+//        val valid = validIter.toArray
+//        val validData = valid.map(_.feature)
+//        val validLabels = valid.map(_.label.toFloat)
+//        Instance.ensureLabel(validLabels, param.numClass)
+//        val worker = new FPGBDTLearner(TaskContext.getPartitionId(),
+//          bcParam.value, bcFeatureInfo.value,
+//          trainData, trainLabels, validData, validLabels
+//        )
+//        Iterator(worker)
+//      }
+//    ).cache()
     val workers = train.zipPartitions(valid)(
       (vpIter, validIter) => {
         val (trainLabels, trainData) = VP.discretize(vpIter.toSeq, bcFeatureInfo.value)

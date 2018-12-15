@@ -335,6 +335,34 @@ public class HeapQuantileSketch extends QuantileSketch {
         return samplesArr[left];
     }
 
+    public float[] tryDistinct(int maxItemNums) {
+        if (samplesArr == null || weightsArr == null)
+            makeSummary();
+
+        int cnt = 1;
+        for (int i = 1; i < samplesArr.length; i++) {
+            if (samplesArr[i] < samplesArr[i - 1])
+                throw new RuntimeException(String.format("%f > %f", samplesArr[i - 1], samplesArr[i]));
+            if (samplesArr[i] != samplesArr[i - 1]) {
+                cnt++;
+                if (cnt++ > maxItemNums)
+                    return null;
+            }
+        }
+        if (cnt != samplesArr.length) {
+            float[] res = new float[cnt];
+            res[0] = samplesArr[0];
+            int index = 1;
+            for (int i = 1; i < samplesArr.length; i++) {
+                if (samplesArr[i] != samplesArr[i - 1])
+                    res[index++] = samplesArr[i];
+            }
+            return res;
+        } else {
+            return samplesArr.clone();
+        }
+    }
+
     public int getK() {
         return k;
     }

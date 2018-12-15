@@ -92,6 +92,19 @@ public class BinaryGradPair implements GradPair, Serializable {
         return hess;
     }
 
+    public void setGrad(double grad) {
+        this.grad = grad;
+    }
+
+    public void setHess(double hess) {
+        this.hess = hess;
+    }
+
+    public void set(double grad, double hess) {
+        this.grad = grad;
+        this.hess = hess;
+    }
+
     @Override
     public String toString() {
         return "(" + grad + ", " + hess + ")";
