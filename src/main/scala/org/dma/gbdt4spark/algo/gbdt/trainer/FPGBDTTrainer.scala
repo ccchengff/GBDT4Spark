@@ -12,8 +12,8 @@ import scala.collection.JavaConverters._
 import scala.util.Random
 import java.{util => ju}
 
-import org.dma.gbdt4spark.algo.gbdt.helper.{HistBuilder, SplitFinder}
-import org.dma.gbdt4spark.algo.gbdt.histogram.{BinaryGradPair, GradPair, Histogram, MultiGradPair}
+import org.dma.gbdt4spark.algo.gbdt.helper.{HistManager, SplitFinder}
+import org.dma.gbdt4spark.algo.gbdt.histogram.{BinaryGradPair, GradPair, MultiGradPair}
 import org.dma.gbdt4spark.objective.loss.Loss
 import org.dma.gbdt4spark.objective.metric.EvalMetric
 import org.dma.gbdt4spark.tree.split.SplitEntry
@@ -25,12 +25,8 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
                     @transient private[gbdt] val  labels: Array[Float],
                     @transient private[gbdt] val validData: Array[Vector],
                     @transient private[gbdt] val validLabels: Array[Float]) extends Serializable {
-  @transient private[gbdt] val forest = ArrayBuffer[GBTTree]()
+  private[gbdt] val forest = ArrayBuffer[GBTTree]()
 
-//  @transient private[gbdt] val trainData: Dataset[Int, Int] = _trainData
-//  @transient private[gbdt] val labels: Array[Float] = _labels
-//  @transient private[gbdt] val validData: Array[Vector] = _validData
-//  @transient private[gbdt] val validLabels: Array[Float] = _validLabel
   @transient private[gbdt] val validPreds = {
     if (param.numClass == 2)
       new Array[Float](validData.length)
@@ -39,7 +35,6 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
   }
 
   private[gbdt] val instanceInfo = InstanceInfo(param, labels.length)
-//  private[gbdt] val featureInfo = _featureInfo
   private[gbdt] val numFeatUsed = Math.round(featureInfo.numFeature * param.featSampleRatio)
   private[gbdt] val isFeatUsed = {
     if (numFeatUsed == featureInfo.numFeature)
@@ -50,9 +45,7 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
 
   private[gbdt] val activeNodes = ArrayBuffer[Int]()
 
-  @transient private[gbdt] val storedHists = new Array[Array[Histogram]](Maths.pow(2, param.maxDepth) - 1)
-  @transient private[gbdt] val nodeGradPairs = new Array[GradPair](Maths.pow(2, param.maxDepth + 1) - 1)
-  @transient private[gbdt] val histBuilder = HistBuilder(param, trainData, instanceInfo, featureInfo)
+  @transient private[gbdt] val histManager = HistManager(param, featureInfo)
   @transient private[gbdt] val splitFinder = SplitFinder(param, featureInfo)
 
   @transient private[gbdt] val buildHistTime = new Array[Long](Maths.pow(2, param.maxDepth) - 1)
@@ -106,6 +99,9 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
         val rand = Random.nextInt(featureInfo.numFeature)
         isFeatUsed(rand) = featureInfo.getNumBin(rand) > 0
       }
+      histManager.reset(isFeatUsed)
+    } else if (forest.length == 1) {
+      histManager.reset(isFeatUsed)
     }
     // 3. reset position info
     instanceInfo.resetPosInfo()
@@ -113,7 +109,7 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
     val loss = getLoss
     val sumGradPair = instanceInfo.calcGradPairs(labels, loss, param)
     tree.getRoot.setSumGradPair(sumGradPair)
-    nodeGradPairs(0) = sumGradPair
+    histManager.setGradPair(0, sumGradPair)
     // 5. set root status
     activeNodes += 0
   }
@@ -133,8 +129,8 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
     splits.flatMap {
       case (nid, ownerId, fidInWorker, split) =>
         tree.getNode(nid).setSplitEntry(split.getSplitEntry)
-        nodeGradPairs(2 * nid + 1) = split.getLeftGradPair
-        nodeGradPairs(2 * nid + 2) = split.getRightGradPair
+        histManager.setGradPair(2 * nid + 1, split.getLeftGradPair)
+        histManager.setGradPair(2 * nid + 2, split.getRightGradPair)
         if (ownerId == this.workerId)
           Iterator((nid, getSplitResult(nid, fidInWorker, split.getSplitEntry)))
         else
@@ -145,10 +141,13 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
   def splitNodes(splitResults: Seq[(Int, RangeBitSet)]): Boolean = {
     splitResults.foreach {
       case (nid, result) =>
-        splitNode(nid, result, (nodeGradPairs(2 * nid + 1), nodeGradPairs(2 * nid + 2)))
+        splitNode(nid, result, (histManager.getGradPair(2 * nid + 1),
+          histManager.getGradPair(2 * nid + 2)))
         if (2 * nid + 1 < Maths.pow(2, param.maxDepth) - 1) {
           activeNodes += 2 * nid + 1
           activeNodes += 2 * nid + 2
+        } else {
+          histManager.removeNodeHist(nid)
         }
     }
     activeNodes.nonEmpty
@@ -160,8 +159,7 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
     val buildStart = System.currentTimeMillis()
     var cur = 0
     val toBuild = ArrayBuffer[Int]()
-    val toBuildGradPair = ArrayBuffer[GradPair]()
-    val toSubtractHist = ArrayBuffer[Array[Histogram]]()
+    val toSubtract = ArrayBuffer[Boolean]()
     while (cur < nids.length) {
       val nid = nids(cur)
       val sibNid = Maths.sibling(nid)
@@ -169,42 +167,30 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
         if (canSplits(cur) || canSplits(cur + 1)) {
           val curSize = instanceInfo.getNodeSize(nid)
           val sibSize = instanceInfo.getNodeSize(sibNid)
-          val parNid = Maths.parent(nid)
-          val parHist = storedHists(parNid)
           if (curSize < sibSize) {
             toBuild += nid
-            toBuildGradPair += nodeGradPairs(nid)
-            toSubtractHist += (if (canSplits(cur + 1)) parHist else null)
+            toSubtract += canSplits(cur + 1)
           } else {
             toBuild += sibNid
-            toBuildGradPair += nodeGradPairs(sibNid)
-            toSubtractHist += (if (canSplits(cur)) parHist else null)
+            toSubtract += canSplits(cur)
           }
-
+        } else {
+          histManager.removeNodeHist(Maths.parent(nid))
         }
         cur += 2
       } else {
         if (canSplits(cur)) {
           toBuild += nid
-          toBuildGradPair += nodeGradPairs(nid)
-          toSubtractHist += null
+          toSubtract += false
         }
         cur += 1
       }
     }
     timing {
       if (toBuild.head == 0) {
-        storedHists(0) = histBuilder.buildHistForRoot(isFeatUsed, toBuildGradPair.head)
+        histManager.buildHistForRoot(trainData, instanceInfo)
       } else {
-        val hists = histBuilder.buildHistForNodes(toBuild,
-          isFeatUsed, toBuildGradPair, toSubtractHist)
-        for (i <- toBuild.indices) {
-          val nid = toBuild(i)
-          storedHists(nid) = hists(i)
-          if (toSubtractHist(i) != null)
-            storedHists(Maths.sibling(nid)) = toSubtractHist(i)
-          storedHists(Maths.parent(nid)) = null
-        }
+        histManager.buildHistForNodes(toBuild, trainData, instanceInfo, toSubtract)
       }
     } {t => buildHistTime(nids.min) = t}
     println(s"Build histograms cost ${System.currentTimeMillis() - buildStart} ms")
@@ -212,13 +198,13 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
     val findStart = System.currentTimeMillis()
     val res = (nids, canSplits).zipped.map {
       case (nid, true) =>
-        val hist = storedHists(nid)
-        val sumGradPair = nodeGradPairs(nid)
+        val hist = histManager.getNodeHist(nid)
+        val sumGradPair = histManager.getGradPair(nid)
         val nodeGain = forest.last.getNode(nid).calcGain(param)
         val split = timing {
           splitFinder.findBestSplit(hist, sumGradPair, nodeGain)
         } {t => findSplitTime(nid) = t}
-        (nid, split)
+        (nid, if (split.isValid(param.minSplitGain)) split else new GBTSplit())
       case (nid, false) =>
         setAsLeaf(nid)
         (nid, new GBTSplit())
@@ -255,10 +241,10 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
   def canSplitNode(nid: Int): Boolean = {
     if (instanceInfo.getNodeSize(nid) > param.minNodeInstance) {
       if (param.numClass == 2) {
-        val sumGradPair = nodeGradPairs(nid).asInstanceOf[BinaryGradPair]
+        val sumGradPair = histManager.getGradPair(nid).asInstanceOf[BinaryGradPair]
         param.satisfyWeight(sumGradPair.getGrad, sumGradPair.getHess)
       } else {
-        val sumGradPair = nodeGradPairs(nid).asInstanceOf[MultiGradPair]
+        val sumGradPair = histManager.getGradPair(nid).asInstanceOf[MultiGradPair]
         param.satisfyWeight(sumGradPair.getGrad, sumGradPair.getHess)
       }
     } else {
@@ -270,6 +256,7 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
 
   def setAsLeaf(nid: Int, node: GBTNode): Unit = {
     node.chgToLeaf()
+    // TODO: update predictions of all training instance together
     if (param.numClass == 2) {
       val weight = node.calcWeight(param)
       instanceInfo.updatePreds(nid, weight, param.learningRate)
@@ -277,6 +264,8 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
       val weights = node.calcWeights(param)
       instanceInfo.updatePreds(nid, weights, param.learningRate)
     }
+    if (nid < Maths.pow(2, param.maxDepth) - 1)  // node not on the last level
+      histManager.removeNodeHist(nid)
   }
 
   def finishTree(): Unit = {
@@ -285,10 +274,6 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
         if (node.getSplitEntry == null && !node.isLeaf)
           setAsLeaf(nid, node)
     }
-    for (i <- storedHists.indices)
-      storedHists(i) = null
-    for (i <- nodeGradPairs.indices)
-      nodeGradPairs(i) = null
   }
 
   def evaluate(): Seq[(EvalMetric.Kind, Double, Double)] = {
@@ -329,7 +314,7 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
 
   def finalizeModel(): Seq[GBTTree] = {
     println(s"Worker[$workerId] finalizing...")
-    histBuilder.shutdown()
+    histManager.shutdown()
     forest
   }
 

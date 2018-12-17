@@ -11,40 +11,35 @@ import java.{util => ju}
 
 object Dataset extends Serializable {
 
-  def fromTextFile(path: String, dim: Int, numPartitionsOpt: Option[Int] = None)
+  def fromTextFile(path: String, dim: Int)
                   (implicit sc: SparkContext): RDD[LabeledPartition[Int, Float]] = {
-    val numPartitions = numPartitionsOpt match {
-      case Some(np) => np
-      case None => sc.defaultMinPartitions
-    }
-    sc.textFile(path, minPartitions = numPartitions)
-      .mapPartitions(iterator => {
-        val labels = new AB.ofFloat
-        val indices = new AB.ofInt
-        val values = new AB.ofFloat
-        val indexEnds = new AB.ofInt
-        var curIndex = 0
-        labels.sizeHint(1 << 20)
-        indices.sizeHint(1 << 20)
-        values.sizeHint(1 << 20)
-        indexEnds.sizeHint(1 << 20)
-        iterator.foreach(text => {
-          val line = text.trim
-          if (line.nonEmpty && !line.startsWith("#")) {
-            val splits = line.split("\\s+|,").map(_.trim)
-            labels += splits(0).toFloat
-            for (i <- 0 until splits.length - 1) {
-              val kv = splits(i + 1).split(":")
-              indices += kv(0).toInt
-              values += kv(1).toFloat
-              curIndex += 1
-            }
-            indexEnds += curIndex
+    sc.textFile(path).mapPartitions(iterator => {
+      val labels = new AB.ofFloat
+      val indices = new AB.ofInt
+      val values = new AB.ofFloat
+      val indexEnds = new AB.ofInt
+      var curIndex = 0
+      labels.sizeHint(1 << 20)
+      indices.sizeHint(1 << 20)
+      values.sizeHint(1 << 20)
+      indexEnds.sizeHint(1 << 20)
+      iterator.foreach(text => {
+        val line = text.trim
+        if (line.nonEmpty && !line.startsWith("#")) {
+          val splits = line.split("\\s+|,").map(_.trim)
+          labels += splits(0).toFloat
+          for (i <- 0 until splits.length - 1) {
+            val kv = splits(i + 1).split(":")
+            indices += kv(0).toInt
+            values += kv(1).toFloat
+            curIndex += 1
           }
-        })
-        Iterator(new LabeledPartition(labels.result(),
-          indices.result(), values.result(), indexEnds.result()))
+          indexEnds += curIndex
+        }
       })
+      Iterator(new LabeledPartition(labels.result(),
+        indices.result(), values.result(), indexEnds.result()))
+    })
   }
 
   def createSketches(dataset: Dataset[Int, Float], dim: Int): Array[HeapQuantileSketch] = {
@@ -125,8 +120,15 @@ object Dataset extends Serializable {
   def restore(dataset: Dataset[Short, Byte]): Dataset[Int, Int] = {
     val res = new Dataset[Int, Int](dataset.numPartition, dataset.numInstance)
     dataset.partitions.foreach(partition => {
-      val indices = partition.indices.map(_.toInt - Short.MinValue)
-      val bins = partition.values.map(_.toInt - Byte.MinValue)
+      val numKV = partition.numKVPair
+      val indices = new Array[Int](numKV)
+      val bins = new Array[Int](numKV)
+      val shortIndices = partition.indices
+      val byteBins = partition.values
+      for (i <- 0 until numKV) {
+        indices(i) = shortIndices(i).toInt - Short.MinValue
+        bins(i) = byteBins(i).toInt - Byte.MinValue
+      }
       res.appendPartition(indices, bins, partition.indexEnds)
     })
     res
@@ -139,7 +141,7 @@ object Dataset extends Serializable {
 
   def apply[@specialized(Byte, Short, Int, Long, Float, Double) K,
   @specialized(Byte, Short, Int, Long, Float, Double) V]
-  (partitions: Array[Partition[K, V]]): Dataset[K, V] = {
+  (partitions: Seq[Partition[K, V]]): Dataset[K, V] = {
     val numPartition = partitions.length
     val numInstance = partitions.map(_.size).sum
     val res = new Dataset[K, V](numPartition, numInstance)

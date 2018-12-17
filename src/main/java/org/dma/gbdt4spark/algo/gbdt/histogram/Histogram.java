@@ -298,4 +298,10 @@ public class Histogram implements Serializable {
             }
         }
     }
+
+    public void clear() {
+        Arrays.fill(gradients, 0.0);
+        Arrays.fill(hessians, 0.0);
+    }
+
 }

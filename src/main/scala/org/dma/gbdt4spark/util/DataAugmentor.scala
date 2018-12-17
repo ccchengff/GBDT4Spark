@@ -62,7 +62,7 @@ object DataAugmentor {
     val numInsScaleRatio = conf.getInt("spark.ml.instance.ratio", 1)
     val numFeatureScaleRatio = conf.getInt("spark.ml.feature.ratio", 1)
 
-    val data = sc.textFile(input)
+    val data0 = sc.textFile(input)
       .map(_.trim)
       .filter(_.nonEmpty)
       .map(line => parseLibsvm(line, numFeature))
@@ -77,6 +77,130 @@ object DataAugmentor {
         .map(insToString)
         .saveAsTextFile(s"$output/$i")
     }
+
+    val data = sc.textFile("data/rcv1/t*")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map(line => parseLibsvm(line, 47237))
+      .repartition(36)
+      .cache()
+
+
+    def myToString(label: Int, indices: Array[Int], values: Array[Double]): String = {
+      val sb = new StringBuilder(s"$label")
+      for (i <- indices.indices) {
+        sb.append(f" ${indices(i)}:${values(i)}%.4f")
+      }
+      sb.toString()
+    }
+
+
+    import scala.collection.mutable
+    import scala.util.Random
+    val aug = data.map(ins => {
+      val nnz = ins._2.length
+      val indices = new mutable.ArrayBuilder.ofInt
+      val values = new mutable.ArrayBuilder.ofDouble
+      indices.sizeHint(nnz * 2)
+      values.sizeHint(nnz * 2)
+      for (i <- 0 until nnz) {
+        indices += ins._2(i)
+        values += ins._3(i)
+      }
+      for (i <- 0 until nnz) {
+        if (Random.nextDouble() < 0.4) {
+          indices += ins._2(i) + 47237
+          if (ins._2(i) % 2 == 0)
+            values += ins._3(i) + Random.nextGaussian()
+          else
+            values += ins._3(i)
+        }
+      }
+      for (i <- (47237 * 2 + 1) to 10000) {
+        if (Random.nextDouble() < 0.1) {
+          indices += i
+          values += Random.nextGaussian()
+        }
+      }
+      myToString(ins._1, indices.result(), values.result())
+    }).cache()
+
+    for (i <- 0 until 70) {
+      val output = s"ffc/data/gen/large/$i"
+      println(s"Copy $i saving to $output")
+      aug.saveAsTextFile(output)
+    }
+
+  }
+
+  def tmp(): Unit = {
+    import org.apache.spark.{SparkConf, SparkContext}
+    import scala.collection.mutable
+    import scala.util.Random
+
+    def parseLibsvm(line: String, dim: Int): (Int, Array[Int], Array[Double]) = {
+      val splits = line.split("\\s+|,").map(_.trim)
+      val y = splits(0).toInt
+
+      val indices = new Array[Int](splits.length - 1)
+      val values = new Array[Double](splits.length - 1)
+      for (i <- 0 until splits.length - 1) {
+        val kv = splits(i + 1).split(":")
+        indices(i) = kv(0).toInt
+        values(i) = kv(1).toDouble
+      }
+
+      (y, indices, values)
+    }
+
+    def myToString(label: Int, indices: Array[Int], values: Array[Double]): String = {
+      val sb = new StringBuilder(s"$label")
+      for (i <- indices.indices) {
+        sb.append(f" ${indices(i)}:${values(i)}%.4f")
+      }
+      sb.toString()
+    }
+
+    val conf = new SparkConf()
+    val sc = SparkContext.getOrCreate(conf)
+    val data = sc.textFile("data/rcv1/t*")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map(line => parseLibsvm(line, 47237))
+      .repartition(10)
+      .cache()
+    val aug = data.map(ins => {
+      val label = if (Random.nextGaussian() < 0.2) {
+        if (Random.nextBoolean()) 1 else 0
+      } else {
+        ins._1
+      }
+      val nnz = ins._2.length
+      val indices = new mutable.ArrayBuilder.ofInt
+      val values = new mutable.ArrayBuilder.ofDouble
+      indices.sizeHint(nnz * 2)
+      values.sizeHint(nnz * 2)
+      for (i <- 0 until nnz) {
+        indices += ins._2(i)
+        values += ins._3(i)
+      }
+      for (i <- 0 until nnz) {
+        if (Random.nextDouble() < 0.4) {
+          indices += ins._2(i) + 47237
+          if (ins._2(i) % 2 == 0)
+            values += ins._3(i) + Random.nextGaussian()
+          else
+            values += ins._3(i)
+        }
+      }
+      for (i <- (47237 * 2 + 1) to 10000) {
+        if (Random.nextDouble() < 0.1) {
+          indices += i
+          values += Random.nextGaussian()
+        }
+      }
+      myToString(label, indices.result(), values.result())
+    }).cache()
   }
 
 }

@@ -118,6 +118,7 @@ object SplitFinder {
 
   def apply(param: GBDTParam, featureInfo: FeatureInfo): SplitFinder =
     new SplitFinder(param, featureInfo)
+
 }
 
 import SplitFinder._
@@ -136,4 +137,5 @@ class SplitFinder(param: GBDTParam, featureInfo: FeatureInfo) {
     }
     best
   }
+
 }
