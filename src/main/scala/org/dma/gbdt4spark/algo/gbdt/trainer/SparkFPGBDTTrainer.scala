@@ -58,11 +58,11 @@ object SparkFPGBDTTrainer {
       case e: Exception =>
         e.printStackTrace()
     } finally {
-      // while (1 + 1 == 2) {}
+       while (1 + 1 == 2) {}
     }
   }
 
-  def orderedFeatureGrouping(numFeature: Int, numGroup: Int): (Array[Int], Array[Array[Int]]) = {
+  def roundRobinFeatureGrouping(numFeature: Int, numGroup: Int): (Array[Int], Array[Array[Int]]) = {
     val fidToGroupId = new Array[Int](numFeature)
     val buffers = new Array[AB.ofInt](numGroup)
     for (partId <- 0 until numGroup) {
@@ -181,36 +181,6 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
     val bcLabels = sc.broadcast(labels)
     println(s"Collect labels cost ${System.currentTimeMillis() - labelStart} ms")
 
-    // 3. Partition features into groups,
-    // get feature id to group id mapping and inverted indexing
-    val featGroupStart = System.currentTimeMillis()
-//    // when feature dimensionality is high, using accumulators might be unsafe
-//    val featNNZ = trainDP.mapPartitions(iterator => {
-//      val featNNZ = new Array[Int](numFeature)
-//      iterator.foreach(_.partitions.foreach(partition => {
-//        val indices = partition.indices
-//        for (i <- indices.indices)
-//          featNNZ(indices(i)) += 1
-//      }))
-//      Iterator(featNNZ)
-//    }).treeReduce((nnz1, nnz2) => {
-//      for (fid <- 0 until numFeature)
-//        nnz1(fid) += nnz2(fid)
-//      nnz1
-//    })
-//    val (fidToGroupId, groupIdToFid, groupSizes, fidToNewFid) = balancedFeatureGrouping(featNNZ, numWorker)
-    val (fidToGroupId, groupIdToFid) = orderedFeatureGrouping(numFeature, numWorker)
-    val fidToNewFid = new Array[Int](numFeature)
-    groupIdToFid.foreach(group => group.zipWithIndex.foreach {
-      case (fid, newFid) => fidToNewFid(fid) = newFid
-    })
-    val groupSizes = groupIdToFid.map(_.length)
-    val bcFidToGroupId = sc.broadcast(fidToGroupId)
-    val bcGroupIdToFid = sc.broadcast(groupIdToFid)
-    val bcFidToNewFid = sc.broadcast(fidToNewFid)
-    val bcGroupSizes = sc.broadcast(groupSizes)
-    println(s"Balanced feature grouping cost ${System.currentTimeMillis() - featGroupStart} ms")
-
     // IdenticalPartitioner for shuffle operation
     class IdenticalPartitioner extends Partitioner {
       override def numPartitions: Int = numWorker
@@ -222,23 +192,22 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
       }
     }
 
-    // 4. build quantile sketches, get candidate splits,
+    // 3. build quantile sketches, get candidate splits,
     // and create feature info, finally broadcast info to all workers
     val getSplitsStart = System.currentTimeMillis()
     val isCategorical = new Array[Boolean](numFeature)
     val splits = new Array[Array[Float]](numFeature)
+    val featNNZ = new Array[Int](numFeature)
     trainDP.flatMap(dataset => {
-      // build quantile sketches and partition them based on column groups
       val sketchGroups = new Array[Array[HeapQuantileSketch]](numWorker)
-      val curIndex = new Array[Int](numWorker)
-      bcGroupSizes.value.zipWithIndex.foreach {
-        case (groupSize, groupId) =>
-          sketchGroups(groupId) = new Array[HeapQuantileSketch](groupSize)
-      }
+      (0 until numWorker).foreach(groupId => {
+        val groupSize = numFeature / numWorker + (if (groupId < (numFeature % numWorker)) 1 else 0)
+        sketchGroups(groupId) = new Array[HeapQuantileSketch](groupSize)
+      })
       val sketches = createSketches(dataset, numFeature)
-      val fidToGroupId = bcFidToGroupId.value
+      val curIndex = new Array[Int](numWorker)
       for (fid <- 0 until numFeature) {
-        val groupId = fidToGroupId(fid)
+        val groupId = fid % numWorker
         if (sketches(fid) == null || sketches(fid).isEmpty) {
           sketchGroups(groupId)(curIndex(groupId)) = null
         } else {
@@ -269,11 +238,11 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
           if (merged(i) != null && !merged(i).isEmpty) {
             val distinct = merged(i).tryDistinct(FeatureInfo.ENUM_THRESHOLD)
             if (distinct == null)
-              (false, Maths.unique(merged(i).getQuantiles(numSplit)))
+              (false, Maths.unique(merged(i).getQuantiles(numSplit)), merged(i).getN.toInt)
             else
-              (true, distinct)
+              (true, distinct, merged(i).getN.toInt)
           } else {
-            (false, null)
+            (false, null, 0)
           }
         })
         Iterator((groupId, splits))
@@ -284,15 +253,26 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
           // restore feature id based on column grouping info
           // and set splits to corresponding feature
           groupSplits.view.zipWithIndex.foreach {
-            case ((fIsCategorical, fSplits), index) =>
-              val fid = groupIdToFid(groupId)(index)
+            case ((fIsCategorical, fSplits, nnz), index) =>
+              val fid = index * numWorker + groupId
               isCategorical(fid) = fIsCategorical
               splits(fid) = fSplits
+              featNNZ(fid) = nnz
           }
       }
     val featureInfo = FeatureInfo(isCategorical, splits)
     val bcFeatureInfo = sc.broadcast(featureInfo)
     println(s"Create feature info cost ${System.currentTimeMillis() - getSplitsStart} ms")
+
+    // 4. Partition features into groups,
+    // get feature id to group id mapping and inverted indexing
+    val featGroupStart = System.currentTimeMillis()
+    val (fidToGroupId, groupIdToFid, groupSizes, fidToNewFid) = balancedFeatureGrouping(featNNZ, numWorker)
+    val bcFidToGroupId = sc.broadcast(fidToGroupId)
+    val bcGroupIdToFid = sc.broadcast(groupIdToFid)
+    val bcFidToNewFid = sc.broadcast(fidToNewFid)
+    val bcGroupSizes = sc.broadcast(groupSizes)
+    println(s"Balanced feature grouping cost ${System.currentTimeMillis() - featGroupStart} ms")
 
     // 5. Perform horizontal-to-vertical partitioning
     val repartStart = System.currentTimeMillis()
@@ -428,8 +408,8 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
 
       // 3. finish tree
       val finishStart = System.currentTimeMillis()
-      val trainMetrics = Array.fill(evalMetrics.length)(0.0)
-      val validMetrics = Array.fill(evalMetrics.length)(0.0)
+      val trainMetrics = new Array[Double](evalMetrics.length)
+      val validMetrics = new Array[Double](evalMetrics.length)
       workers.map(worker => {
         worker.finishTree()
         worker.evaluate()

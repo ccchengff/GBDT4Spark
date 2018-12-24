@@ -1,5 +1,8 @@
 package org.dma.gbdt4spark.sketch;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.util.Arrays;
 
 /**
@@ -94,8 +97,7 @@ public class HeapQuantileSketch extends QuantileSketch {
     }
 
     private void ensureLevels(long newN) {
-        int numLevels = 1 + (63 - Long.numberOfLeadingZeros(newN / (k * 2)));
-        int spaceNeeded = k * (numLevels + 2);
+        int spaceNeeded = SketchUtils.needBufferCapacity(k, newN);
         if (spaceNeeded <= combinedBufferCapacity) return;
         final float[] baseBuffer = combinedBuffer;
         combinedBuffer = Arrays.copyOf(baseBuffer, spaceNeeded);
@@ -367,5 +369,35 @@ public class HeapQuantileSketch extends QuantileSketch {
         return k;
     }
 
+    private void writeObject(ObjectOutputStream oos) throws IOException {
+        oos.writeLong(n);
+        oos.writeLong(estimateN);
+        oos.writeFloat(minValue);
+        oos.writeFloat(maxValue);
+        oos.writeInt(k);
+        oos.writeInt(combinedBufferCapacity);
+        int size = Math.min(combinedBufferCapacity,
+                SketchUtils.needBufferCapacity(k, n));
+        for (int i = 0; i < size; i++)
+            oos.writeFloat(combinedBuffer[i]);
+        oos.writeInt(baseBufferCount);
+        oos.writeLong(bitPattern);
+    }
+
+    private void readObject(ObjectInputStream ois) throws ClassNotFoundException, IOException {
+        this.n = ois.readLong();
+        this.estimateN = ois.readLong();
+        this.minValue = ois.readFloat();
+        this.maxValue = ois.readFloat();
+        this.k = ois.readInt();
+        this.combinedBufferCapacity = ois.readInt();
+        this.combinedBuffer = new float[combinedBufferCapacity];
+        int size = Math.min(combinedBufferCapacity,
+                SketchUtils.needBufferCapacity(k, n));
+        for (int i = 0; i < size; i++)
+            this.combinedBuffer[i] = ois.readFloat();
+        this.baseBufferCount = ois.readInt();
+        this.bitPattern = ois.readLong();
+    }
 
 }
