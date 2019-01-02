@@ -7,7 +7,7 @@ import org.apache.spark.{Partitioner, SparkConf, SparkContext, TaskContext}
 import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset._
 import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset
 import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo
-import org.dma.gbdt4spark.algo.gbdt.tree.GBTSplit
+import org.dma.gbdt4spark.algo.gbdt.tree.{GBTSplit, GBTTree}
 import org.dma.gbdt4spark.common.Global.Conf._
 import org.dma.gbdt4spark.data.Instance
 import org.dma.gbdt4spark.objective.ObjectiveFactory
@@ -20,8 +20,8 @@ import scala.collection.mutable.{ArrayBuilder => AB}
 object SparkFPGBDTTrainer {
 
   def main(args: Array[String]): Unit = {
-    val conf = new SparkConf()
-    implicit val sc = SparkContext.getOrCreate(conf)
+    @transient val conf = new SparkConf()
+    @transient implicit val sc = SparkContext.getOrCreate(conf)
 
     val param = new GBDTParam
     param.numClass = conf.getInt(ML_NUM_CLASS, DEFAULT_ML_NUM_CLASS)
@@ -48,12 +48,16 @@ object SparkFPGBDTTrainer {
     param.maxLeafWeight = conf.getDouble(ML_GBDT_MAX_LEAF_WEIGHT, DEFAULT_ML_GBDT_MAX_LEAF_WEIGHT).toFloat
     println(s"Hyper-parameters:\n$param")
 
+    val modelPath = conf.get(ML_MODEL_PATH)
+    println(s"Model will be saved to $modelPath")
+
     try {
       val trainer = new SparkFPGBDTTrainer(param)
       val trainInput = conf.get(ML_TRAIN_DATA_PATH)
       val validInput = conf.get(ML_VALID_DATA_PATH)
       trainer.initialize(trainInput, validInput)
-      trainer.train()
+      val model = trainer.train()
+      sc.parallelize(Seq(model)).saveAsObjectFile(modelPath)
     } catch {
       case e: Exception =>
         e.printStackTrace()
@@ -338,7 +342,7 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
     println(s"Initialization done, cost ${System.currentTimeMillis() - initStart} ms in total")
   }
 
-  def train(): Unit = {
+  def train(): Seq[GBTTree] = {
     val trainStart = System.currentTimeMillis()
 
     val loss = ObjectiveFactory.getLoss(param.lossFunc)
@@ -449,6 +453,7 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
         println(s"Tree[${treeId + 1}] contains ${tree.size} nodes " +
           s"(${(tree.size - 1) / 2 + 1} leaves)")
     }
+    forest
   }
 
 }

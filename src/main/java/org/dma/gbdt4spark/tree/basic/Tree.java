@@ -15,6 +15,10 @@ public abstract class Tree<TParam extends TreeParam, Node extends TNode> impleme
         this.nodes = new TreeMap<>();
     }
 
+    public TParam getParam() {
+        return this.param;
+    }
+
     public Node getRoot() {
         return this.nodes.get(0);
     }

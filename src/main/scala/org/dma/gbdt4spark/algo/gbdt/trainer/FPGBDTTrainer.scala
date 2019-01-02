@@ -1,5 +1,7 @@
 package org.dma.gbdt4spark.algo.gbdt.trainer
 
+import java.util.concurrent.Executors
+
 import org.apache.spark.ml.linalg.Vector
 import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset
 import org.dma.gbdt4spark.algo.gbdt.metadata.{FeatureInfo, InstanceInfo}
@@ -47,6 +49,8 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
 
   @transient private[gbdt] val histManager = HistManager(param, featureInfo)
   @transient private[gbdt] val splitFinder = SplitFinder(param, featureInfo)
+  @transient private[gbdt] val threadPool = if (param.numThread > 1)
+    Executors.newFixedThreadPool(param.numThread) else null
 
   @transient private[gbdt] val buildHistTime = new Array[Long](Maths.pow(2, param.maxDepth) - 1)
   @transient private[gbdt] val findSplitTime = new Array[Long](Maths.pow(2, param.maxDepth) - 1)
@@ -188,9 +192,9 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
     }
     timing {
       if (toBuild.head == 0) {
-        histManager.buildHistForRoot(trainData, instanceInfo)
+        histManager.buildHistForRoot(trainData, instanceInfo, threadPool)
       } else {
-        histManager.buildHistForNodes(toBuild, trainData, instanceInfo, toSubtract)
+        histManager.buildHistForNodes(toBuild, trainData, instanceInfo, toSubtract, threadPool)
       }
     } {t => buildHistTime(nids.min) = t}
     println(s"Build histograms cost ${System.currentTimeMillis() - buildStart} ms")
@@ -216,7 +220,7 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
   def getSplitResult(nid: Int, fidInWorker: Int, splitEntry: SplitEntry): RangeBitSet = {
     require(!splitEntry.isEmpty && splitEntry.getGain > param.minSplitGain)
     val splits = featureInfo.getSplits(fidInWorker)
-    timing(instanceInfo.getSplitResult(nid, fidInWorker, splitEntry, splits, trainData)) {
+    timing(instanceInfo.getSplitResult(nid, fidInWorker, splitEntry, splits, trainData, threadPool)) {
       t => getSplitResultTime(nid) = t
     }
   }
@@ -314,7 +318,7 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
 
   def finalizeModel(): Seq[GBTTree] = {
     println(s"Worker[$workerId] finalizing...")
-    histManager.shutdown()
+    if (threadPool != null) threadPool.shutdown()
     forest
   }
 
