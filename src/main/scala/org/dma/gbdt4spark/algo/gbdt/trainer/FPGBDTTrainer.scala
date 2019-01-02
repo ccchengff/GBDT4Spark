@@ -111,7 +111,7 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
     instanceInfo.resetPosInfo()
     // 4. calc grads
     val loss = getLoss
-    val sumGradPair = instanceInfo.calcGradPairs(labels, loss, param)
+    val sumGradPair = instanceInfo.calcGradPairs(labels, loss, param, threadPool)
     tree.getRoot.setSumGradPair(sumGradPair)
     histManager.setGradPair(0, sumGradPair)
     // 5. set root status
