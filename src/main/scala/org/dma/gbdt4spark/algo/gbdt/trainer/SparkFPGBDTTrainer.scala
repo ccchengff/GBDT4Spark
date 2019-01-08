@@ -1,5 +1,6 @@
 package org.dma.gbdt4spark.algo.gbdt.trainer
 
+import org.apache.hadoop.fs.Path
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
@@ -11,6 +12,7 @@ import org.dma.gbdt4spark.algo.gbdt.tree.{GBTSplit, GBTTree}
 import org.dma.gbdt4spark.common.Global.Conf._
 import org.dma.gbdt4spark.data.Instance
 import org.dma.gbdt4spark.objective.ObjectiveFactory
+import org.dma.gbdt4spark.objective.metric.EvalMetric.Kind
 import org.dma.gbdt4spark.sketch.HeapQuantileSketch
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.util.{DataLoader, Maths}
@@ -57,7 +59,7 @@ object SparkFPGBDTTrainer {
       val validInput = conf.get(ML_VALID_DATA_PATH)
       trainer.initialize(trainInput, validInput)
       val model = trainer.train()
-      sc.parallelize(Seq(model)).saveAsObjectFile(modelPath)
+      trainer.save(model, modelPath)
     } catch {
       case e: Exception =>
         e.printStackTrace()
@@ -424,13 +426,17 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
           validMetrics(index) += valid
       })
       val evalTrainMsg = (evalMetrics, trainMetrics).zipped.map {
-        case (evalMetric, trainSum) =>
-          s"${evalMetric.getKind}[${evalMetric.avg(trainSum, numTrain)}]"
+        case (evalMetric, trainSum) => evalMetric.getKind match {
+          case Kind.AUC => s"${evalMetric.getKind}[${evalMetric.avg(trainSum, workers.count.toInt)}]"
+          case _ => s"${evalMetric.getKind}[${evalMetric.avg(trainSum, numTrain)}]"
+        }
       }.mkString(", ")
       println(s"Evaluation on train data after ${treeId + 1} tree(s): $evalTrainMsg")
       val evalValidMsg = (evalMetrics, validMetrics).zipped.map {
-        case (evalMetric, validSum) =>
-          s"${evalMetric.getKind}[${evalMetric.avg(validSum, numValid)}]"
+        case (evalMetric, validSum) => evalMetric.getKind match {
+          case Kind.AUC => s"${evalMetric.getKind}[${evalMetric.avg(validSum, workers.count.toInt)}]"
+          case _ => s"${evalMetric.getKind}[${evalMetric.avg(validSum, numValid)}]"
+        }
       }.mkString(", ")
       println(s"Evaluation on valid data after ${treeId + 1} tree(s): $evalValidMsg")
       println(s"Tree[${treeId + 1}] Finish tree cost ${System.currentTimeMillis() - finishStart} ms")
@@ -454,6 +460,13 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
           s"(${(tree.size - 1) / 2 + 1} leaves)")
     }
     forest
+  }
+
+  def save(model: Seq[GBTTree], modelPath: String)(implicit sc: SparkContext): Unit = {
+    val path = new Path(modelPath)
+    val fs = path.getFileSystem(sc.hadoopConfiguration)
+    if (fs.exists(path)) fs.delete(path, true)
+    sc.parallelize(Seq(model)).saveAsObjectFile(modelPath)
   }
 
 }
