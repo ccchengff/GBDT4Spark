@@ -18,6 +18,7 @@ import org.dma.gbdt4spark.algo.gbdt.helper.{HistManager, SplitFinder}
 import org.dma.gbdt4spark.algo.gbdt.histogram.{BinaryGradPair, GradPair, MultiGradPair}
 import org.dma.gbdt4spark.objective.loss.Loss
 import org.dma.gbdt4spark.objective.metric.EvalMetric
+import org.dma.gbdt4spark.objective.metric.EvalMetric.Kind
 import org.dma.gbdt4spark.tree.split.SplitEntry
 import org.dma.gbdt4spark.util.{Maths, RangeBitSet}
 
@@ -303,9 +304,15 @@ class FPGBDTTrainer(val workerId: Int, val param: GBDTParam,
     val metrics = evalMetrics.map(evalMetric => {
       val kind = evalMetric.getKind
       val trainSum = evalMetric.sum(instanceInfo.predictions, labels, slice._1, slice._2)
-      val trainMetric = evalMetric.avg(trainSum, slice._2 - slice._1)
+      val trainMetric = kind match {
+        case Kind.AUC => evalMetric.avg(trainSum, 1)
+        case _ => evalMetric.avg(trainSum, slice._2 - slice._1)
+      }
       val validSum = evalMetric.sum(validPreds, validLabels)
-      val validMetric = evalMetric.avg(validSum, validLabels.length)
+      val validMetric = kind match {
+        case Kind.AUC => evalMetric.avg(validSum, 1)
+        case _ => evalMetric.avg(validSum, validLabels.length)
+      }
       (kind, trainSum, trainMetric, validSum, validMetric)
     })
 
