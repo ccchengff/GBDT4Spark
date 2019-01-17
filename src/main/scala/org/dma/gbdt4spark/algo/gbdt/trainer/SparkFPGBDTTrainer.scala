@@ -148,7 +148,7 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
   @transient private[gbdt] var bcGroupSizes: Broadcast[Array[Int]] = _
   @transient private[gbdt] var bcFeatureInfo: Broadcast[FeatureInfo] = _
 
-  @transient private[gbdt] var workers: RDD[FPGBDTTrainer] = _
+  @transient private[gbdt] var workers: RDD[FPGBDTTrainerWrapper] = _
 
   private[gbdt] var numTrain: Int = _
   private[gbdt] var numValid: Int = _
@@ -322,7 +322,8 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
         val worker = new FPGBDTTrainer(workerId, bcParam.value,
           featureInfoOfGroup(bcFeatureInfo.value, workerId, bcGroupIdToFid.value(workerId)),
           trainData, trainLabels, validData, validLabels)
-        Iterator(worker)
+        val wrapper = FPGBDTTrainerWrapper(workerId, worker)
+        Iterator(wrapper)
       }
     ).cache()
     workers.foreach(worker =>
