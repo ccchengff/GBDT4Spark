@@ -12,7 +12,7 @@
         <slf4jVersion>1.7.25</slf4jVersion>
         <jdkVersion>1.8</jdkVersion>
         <scalaVersion>2.11.8</scalaVersion>
-        <sparkVersion>2.2.0</sparkVersion>
+        <sparkVersion>2.4.4</sparkVersion>
     </properties>
 
     <repositories>
