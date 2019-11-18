@@ -4,7 +4,7 @@ import org.dma.gbdt4spark.algo.gbdt.histogram.{BinaryGradPair, GradPair, Histogr
 import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo
 import org.dma.gbdt4spark.algo.gbdt.tree.GBTSplit
 import org.dma.gbdt4spark.tree.param.GBDTParam
-import org.dma.gbdt4spark.tree.split.{SplitPoint, SplitSet}
+import org.dma.gbdt4spark.tree.split.{SplitEntry, SplitPoint, SplitSet}
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -136,6 +136,14 @@ class SplitFinder(param: GBDTParam, featureInfo: FeatureInfo) {
       }
     }
     best
+  }
+
+  def childrenGradPairs(histogram: Histogram, splitEntry: SplitEntry): Unit = {
+    splitEntry match {
+      case splitPoint: SplitPoint =>
+
+      case splitSet: SplitSet =>
+    }
   }
 
 }

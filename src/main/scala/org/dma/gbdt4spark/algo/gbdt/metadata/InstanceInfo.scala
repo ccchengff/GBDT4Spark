@@ -4,6 +4,7 @@ import java.util.concurrent.ExecutorService
 
 import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset
 import org.dma.gbdt4spark.algo.gbdt.histogram.{BinaryGradPair, GradPair, MultiGradPair}
+import org.dma.gbdt4spark.algo.gbdt.trainer.csr.CSRDataset
 import org.dma.gbdt4spark.objective.loss.{BinaryLoss, Loss, MultiLoss}
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.tree.split.SplitEntry
@@ -136,6 +137,48 @@ case class InstanceInfo(predictions: Array[Float], weights: Array[Float], gradie
     // find the cut position
     val cutPos = if (left == right) {
       if (splitResult.get(left)) left - 1
+      else left
+    } else {
+      right
+    }
+    nodePosStart(2 * nid + 1) = nodeStart
+    nodePosEnd(2 * nid + 1) = cutPos
+    nodePosStart(2 * nid + 2) = cutPos + 1
+    nodePosEnd(2 * nid + 2) = nodeEnd
+  }
+
+  def updatePos(nid: Int, dataset: Dataset[Int, Int],
+                splitEntry: SplitEntry, splits: Array[Float]): Unit = {
+    val fid = splitEntry.getFid
+    def getFlowTo(posId: Int): Int = {
+      val insId = nodeToIns(posId)
+      val binId = dataset.get(insId, fid)
+      if (binId >= 0) {
+        splitEntry.flowTo(splits(binId))
+      } else {
+        splitEntry.defaultTo()
+      }
+    }
+
+    val nodeStart = nodePosStart(nid)
+    val nodeEnd = nodePosEnd(nid)
+    var left = nodeStart
+    var right = nodeEnd
+    while (left < right) {
+      while (left < right && getFlowTo(left) == 0) left += 1
+      while (left < right && getFlowTo(right) == 1) right -= 1
+      if (left < right) {
+        val leftInsId = nodeToIns(left)
+        val rightInsId = nodeToIns(right)
+        nodeToIns(left) = rightInsId
+        nodeToIns(right) = leftInsId
+        left += 1
+        right -= 1
+      }
+    }
+    // find the cut position
+    val cutPos = if (left == right) {
+      if (getFlowTo(left) == 1) left - 1
       else left
     } else {
       right

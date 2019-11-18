@@ -26,6 +26,14 @@ public class Histogram implements Serializable {
         }
     }
 
+    public Histogram(int numBin, int numClass, boolean fullHessian, double[] gradients, double[] hessians) {
+        this.numBin = numBin;
+        this.numClass = numClass;
+        this.fullHessian = fullHessian;
+        this.gradients = gradients;
+        this.hessians = hessians;
+    }
+
     public void accumulate(int index, double grad, double hess) {
         gradients[index] += grad;
         hessians[index] += hess;
@@ -304,4 +312,11 @@ public class Histogram implements Serializable {
         Arrays.fill(hessians, 0.0);
     }
 
+    public double[] getGradients() {
+        return gradients;
+    }
+
+    public double[] getHessians() {
+        return hessians;
+    }
 }

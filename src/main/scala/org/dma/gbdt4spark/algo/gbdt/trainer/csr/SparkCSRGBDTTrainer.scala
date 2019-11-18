@@ -1,12 +1,12 @@
-package org.dma.gbdt4spark.algo.gbdt.trainer
+package org.dma.gbdt4spark.algo.gbdt.trainer.csr
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{Partitioner, SparkConf, SparkContext, TaskContext}
-import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset._
 import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset
+import org.dma.gbdt4spark.algo.gbdt.dataset.Dataset.{columnGrouping, createSketches, fromTextFile}
 import org.dma.gbdt4spark.algo.gbdt.metadata.FeatureInfo
 import org.dma.gbdt4spark.algo.gbdt.tree.{GBTSplit, GBTTree}
 import org.dma.gbdt4spark.common.Global.Conf._
@@ -17,9 +17,7 @@ import org.dma.gbdt4spark.sketch.HeapQuantileSketch
 import org.dma.gbdt4spark.tree.param.GBDTParam
 import org.dma.gbdt4spark.util.{DataLoader, Maths}
 
-import scala.collection.mutable.{ArrayBuilder => AB}
-
-object SparkFPGBDTTrainer {
+object SparkCSRGBDTTrainer {
 
   def main(args: Array[String]): Unit = {
     @transient val conf = new SparkConf()
@@ -54,7 +52,7 @@ object SparkFPGBDTTrainer {
     println(s"Model will be saved to $modelPath")
 
     try {
-      val trainer = new SparkFPGBDTTrainer(param)
+      val trainer = new SparkCSRGBDTTrainer(param)
       val trainInput = conf.get(ML_TRAIN_DATA_PATH)
       val validInput = conf.get(ML_VALID_DATA_PATH)
       trainer.initialize(trainInput, validInput)
@@ -64,82 +62,15 @@ object SparkFPGBDTTrainer {
       case e: Exception =>
         e.printStackTrace()
     } finally {
-       //while (1 + 1 == 2) {}
+      //while (1 + 1 == 2) {}
     }
   }
 
-  def roundRobinFeatureGrouping(numFeature: Int, numGroup: Int): (Array[Int], Array[Array[Int]]) = {
-    val fidToGroupId = new Array[Int](numFeature)
-    val buffers = new Array[AB.ofInt](numGroup)
-    for (partId <- 0 until numGroup) {
-      buffers(partId) = new AB.ofInt
-      buffers(partId).sizeHint((1.5 * numFeature / numGroup).toInt)
-    }
-    for (fid <- 0 until numFeature) {
-      val partId = fid % numGroup
-      fidToGroupId(fid) = partId
-      buffers(partId) += fid
-    }
-    val groupIdToFid = buffers.map(_.result())
-    (fidToGroupId, groupIdToFid)
-  }
-
-  def balancedFeatureGrouping(featNNZ: Array[Int], numGroup: Int): (Array[Int], Array[Array[Int]], Array[Int], Array[Int]) = {
-    val numFeature = featNNZ.length
-    val fidToGroupId = new Array[Int](numFeature)
-    val groupSizes = new Array[Int](numGroup)
-    val groupNNZ = new Array[Long](numGroup)
-    val sortedFeatNNZ = featNNZ.zipWithIndex.sortBy(_._1)
-    for (i <- 0 until (numFeature / 2)) {
-      val fid = sortedFeatNNZ(i)._2
-      val groupId = fid % numGroup
-      fidToGroupId(fid) = groupId
-      groupSizes(groupId) += 1
-      groupNNZ(groupId) += sortedFeatNNZ(i)._1
-    }
-    for (i <- (numFeature / 2) until numFeature) {
-      val fid = sortedFeatNNZ(i)._2
-      val groupId = numGroup - (fid % numGroup) - 1
-      fidToGroupId(fid) = groupId
-      groupSizes(groupId) += 1
-      groupNNZ(groupId) += sortedFeatNNZ(i)._1
-    }
-    val fidToNewFid = new Array[Int](numFeature)
-    val groupIdToFid = groupSizes.map(groupSize => new Array[Int](groupSize))
-    val curIndexes = new Array[Int](numGroup)
-    for (fid <- fidToGroupId.indices) {
-      val groupId = fidToGroupId(fid)
-      val newFid = curIndexes(groupId)
-      fidToNewFid(fid) = newFid
-      groupIdToFid(groupId)(newFid) = fid
-      curIndexes(groupId) += 1
-    }
-    println("Feature grouping info: " + (groupSizes, groupNNZ, 0 until numGroup).zipped.map {
-      case (size, nnz, groupId) => s"(group[$groupId] #feature[$size] #nnz[$nnz])"
-    }.mkString(" "))
-    (fidToGroupId, groupIdToFid, groupSizes, fidToNewFid)
-  }
-
-  def featureInfoOfGroup(featureInfo: FeatureInfo, groupId: Int,
-                         groupIdToFid: Array[Int]): FeatureInfo = {
-    val groupSize = groupIdToFid.length
-    val featTypes = new Array[Boolean](groupSize)
-    val numBin = new Array[Int](groupSize)
-    val splits = new Array[Array[Float]](groupSize)
-    val defaultBins = new Array[Int](groupSize)
-    groupIdToFid.view.zipWithIndex.foreach {
-      case (fid, newFid) =>
-        featTypes(newFid) = featureInfo.isCategorical(fid)
-        numBin(newFid) = featureInfo.getNumBin(fid)
-        splits(newFid) = featureInfo.getSplits(fid)
-        defaultBins(newFid) = featureInfo.getDefaultBin(fid)
-    }
-    FeatureInfo(featTypes, numBin, splits, defaultBins)
-  }
 }
 
-import SparkFPGBDTTrainer._
-class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
+import org.dma.gbdt4spark.algo.gbdt.trainer.SparkFPGBDTTrainer._
+class SparkCSRGBDTTrainer(param: GBDTParam) extends Serializable {
+
   @transient implicit val sc = SparkContext.getOrCreate()
 
   @transient private[gbdt] var bcFidToGroupId: Broadcast[Array[Int]] = _
@@ -148,7 +79,7 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
   @transient private[gbdt] var bcGroupSizes: Broadcast[Array[Int]] = _
   @transient private[gbdt] var bcFeatureInfo: Broadcast[FeatureInfo] = _
 
-  @transient private[gbdt] var workers: RDD[FPGBDTTrainerWrapper] = _
+  @transient private[gbdt] var workers: RDD[CSRGBDTTrainerWrapper] = _
 
   private[gbdt] var numTrain: Int = _
   private[gbdt] var numValid: Int = _
@@ -306,23 +237,32 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
 
     // 6. initialize worker
     val initWorkerStart = System.currentTimeMillis()
+    val bcFeatNNZ = sc.broadcast(featNNZ)
     val valid = DataLoader.loadLibsvmDP(validInput, param.numFeature)
       .repartition(param.numWorker)
     val workers = trainFP.zipPartitions(valid, preservesPartitioning = true)(
       (trainIter, validIter) => {
+        val workerId = TaskContext.getPartitionId
+        val featureInfo = featureInfoOfGroup(bcFeatureInfo.value, workerId, bcGroupIdToFid.value(workerId))
+        val groupFeatNNZ = new Array[Int](bcGroupIdToFid.value(workerId).length)
+        for (fid <- 0 until bcParam.value.numFeature) {
+          if (bcFidToGroupId.value(fid) == workerId) {
+            val newFid = bcFidToNewFid.value(fid)
+            groupFeatNNZ(newFid) = bcFeatNNZ.value(fid)
+          }
+        }
+
         val train = trainIter.toArray
         require(train.length == 1)
-        val trainData = Dataset.restore(train.head)
+        val trainData = CSRDataset.apply(Dataset.restore(train.head), featureInfo, groupFeatNNZ)
         val trainLabels = bcLabels.value
         val valid = validIter.toArray
         val validData = valid.map(_.feature)
         val validLabels = valid.map(_.label.toFloat)
         Instance.ensureLabel(validLabels, bcParam.value.numClass)
-        val workerId = TaskContext.getPartitionId
-        val worker = new FPGBDTTrainer(workerId, bcParam.value,
-          featureInfoOfGroup(bcFeatureInfo.value, workerId, bcGroupIdToFid.value(workerId)),
+        val worker = new CSRGBDTTrainer(workerId, bcParam.value, featureInfo,
           trainData, trainLabels, validData, validLabels)
-        val wrapper = FPGBDTTrainerWrapper(workerId, worker)
+        val wrapper = CSRGBDTTrainerWrapper(workerId, worker)
         Iterator(wrapper)
       }
     ).cache()
@@ -343,6 +283,7 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
     this.numValid = numValid
 
     println(s"Initialization done, cost ${System.currentTimeMillis() - initStart} ms in total")
+
   }
 
   def train(): Seq[GBTTree] = {
@@ -369,7 +310,7 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
         val findStart = System.currentTimeMillis()
         val nids = collection.mutable.TreeSet[Int]()
         workers.map(worker => (worker.workerId, worker.findSplits()))
-            .collect().foreach {
+          .collect().foreach {
           case (workerId, splits) =>
             splits.foreach {
               case (nid, split) =>
@@ -390,9 +331,9 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
         val validSplits = gatheredSplits.filter(_._4.isValid(param.minSplitGain))
         val leaves = gatheredSplits.filter(!_._4.isValid(param.minSplitGain)).map(_._1)
         if (gatheredSplits.nonEmpty) {
-        println(s"Build histograms and find best splits cost " +
-          s"${System.currentTimeMillis() - findStart} ms, " +
-          s"${validSplits.length} node(s) to split")
+          println(s"Build histograms and find best splits cost " +
+            s"${System.currentTimeMillis() - findStart} ms, " +
+            s"${validSplits.length} node(s) to split")
           val resultStart = System.currentTimeMillis()
           val bcValidSplits = sc.broadcast(validSplits)
           val bcLeaves = sc.broadcast(leaves)
@@ -446,11 +387,11 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
       println(s"Train tree cost ${currentTime - createStart} ms, " +
         s"${treeId + 1} tree(s) done, ${currentTime - trainStart} ms elapsed")
 
-//      workers.map(_.reportTime()).collect().zipWithIndex.foreach {
-//        case (str, id) =>
-//          println(s"========Time cost summation of worker[$id]========")
-//          println(str)
-//      }
+      //      workers.map(_.reportTime()).collect().zipWithIndex.foreach {
+      //        case (str, id) =>
+      //          println(s"========Time cost summation of worker[$id]========")
+      //          println(str)
+      //      }
     }
 
     // TODO: check equality
@@ -469,5 +410,4 @@ class SparkFPGBDTTrainer(param: GBDTParam) extends Serializable {
     if (fs.exists(path)) fs.delete(path, true)
     sc.parallelize(Seq(model)).saveAsObjectFile(modelPath)
   }
-
 }

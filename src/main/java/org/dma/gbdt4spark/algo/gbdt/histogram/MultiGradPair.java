@@ -79,7 +79,7 @@ public class MultiGradPair implements GradPair, Serializable {
 
     public GradPair subtract(double[] grad, double[] hess) {
         MultiGradPair res = this.copy();
-        res.plusBy(grad, hess);
+        res.subtractBy(grad, hess);
         return res;
     }
 

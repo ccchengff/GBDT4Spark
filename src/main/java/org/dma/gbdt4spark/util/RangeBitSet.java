@@ -124,6 +124,10 @@ public class RangeBitSet implements Serializable {
         return numSetTimes;
     }
 
+    public void setNumSetTimes(int numSetTimes) {
+        this.numSetTimes = numSetTimes;
+    }
+
     public int getNumValid() {
         int res = 0;
         for (int i = from; i <= to; i++) {

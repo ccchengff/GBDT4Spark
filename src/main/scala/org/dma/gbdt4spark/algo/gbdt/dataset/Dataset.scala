@@ -10,6 +10,9 @@ import scala.collection.mutable.{ArrayBuilder => AB}
 import scala.io.Source
 import java.{util => ju}
 
+import org.apache.spark.ml.linalg.SparseVector
+import org.dma.gbdt4spark.data.Instance
+
 object Dataset extends Serializable {
 
   def fromDisk(path: String, dim: Int): Dataset[Int, Float] = {
@@ -75,6 +78,33 @@ object Dataset extends Serializable {
       Iterator(new LabeledPartition(labels.result(),
         indices.result(), values.result(), indexEnds.result()))
     })
+  }
+
+  def fromLabeledData(instances: Array[Instance]): Dataset[Int, Float] = {
+    val numIns = instances.length
+    var numKV = 0
+    for (ins <- instances)
+      numKV += ins.feature.numActives
+    val indices = new Array[Int](numKV)
+    val values = new Array[Float](numKV)
+    val indexEnds = new Array[Int](numIns)
+    var offset = 0
+    for (insId <- 0 until numIns) {
+      val ins = instances(insId)
+      val features = ins.feature.asInstanceOf[SparseVector]
+      val insIndices = features.indices
+      val insValues = features.values
+      val nnz = insIndices.length
+      for (i <- 0 until nnz) {
+        indices(offset + i) = insIndices(i)
+        values(offset + i) = insValues(i).toFloat
+      }
+      offset += nnz
+      indexEnds(insId) = offset
+    }
+    val labels = instances.map(_.label.toFloat)
+    val partition = new LabeledPartition[Int, Float](labels, indices, values, indexEnds)
+    apply[Int, Float](Seq(partition))
   }
 
   def createSketches(dataset: Dataset[Int, Float], dim: Int): Array[HeapQuantileSketch] = {
@@ -155,6 +185,53 @@ object Dataset extends Serializable {
     }
   }
 
+  def columnGrouping2(dataset: Dataset[Int, Float], fidToGroupId: Array[Int],
+                      fidToNewFid: Array[Int], numGroup: Int): Array[Partition[Int, Double]] = {
+    val size = dataset.size
+    val numKV = dataset.numKVPair
+    val indices = new Array[AB.ofInt](numGroup)
+    val values = new Array[AB.ofDouble](numGroup)
+    val indexEnds = new Array[AB.ofInt](numGroup)
+    val curIndex = new Array[Int](numGroup)
+    for (groupId <- 0 until numGroup) {
+      indices(groupId) = new AB.ofInt
+      values(groupId) = new AB.ofDouble
+      indexEnds(groupId) = new AB.ofInt
+      indices(groupId).sizeHint((1.2 * numKV / numGroup).toInt)
+      values(groupId).sizeHint((1.2 * numKV / numGroup).toInt)
+      indexEnds(groupId).sizeHint((1.2 * size / numGroup).toInt)
+    }
+
+    dataset.partitions.foreach(partition => {
+      val size = partition.size
+      val partIndices = partition.indices
+      val partValues = partition.values
+      val partIndexEnds = partition.indexEnds
+      var indexStart = 0
+      for (i <- 0 until size) {
+        for (j <- indexStart until partIndexEnds(i)) {
+          val fid = partIndices(j)
+          val fvalue = partValues(j)
+          val groupId = fidToGroupId(fid)
+          val newFid = fidToNewFid(fid)
+          indices(groupId) += newFid
+          values(groupId) += fvalue.toDouble
+          curIndex(groupId) += 1
+        }
+        indexStart = partIndexEnds(i)
+        for (groupId <- 0 until numGroup) {
+          indexEnds(groupId) += curIndex(groupId)
+        }
+      }
+    })
+
+    (indices, values, indexEnds).zipped.map {
+      case (groupIndices, groupBins, groupIndexEnds) =>
+        new Partition[Int, Double](groupIndices.result(),
+          groupBins.result(), groupIndexEnds.result())
+    }
+  }
+
   def merge(partitions: Array[Partition[Short, Byte]]): Dataset[Int, Int] = {
     val numPartition = partitions.length
     val numInstance = partitions.map(_.size).sum
@@ -178,6 +255,25 @@ object Dataset extends Serializable {
       for (i <- 0 until numKV) {
         indices(i) = shortIndices(i).toInt - Short.MinValue
         bins(i) = byteBins(i).toInt - Byte.MinValue
+      }
+      res.appendPartition(indices, bins, partition.indexEnds)
+    })
+    res
+  }
+
+  def restore2(dataset: Dataset[Int, Double], fidToOriginFid: Array[Int], featureInfo: FeatureInfo): Dataset[Int, Int] = {
+    val res = new Dataset[Int, Int](dataset.numPartition, dataset.numInstance)
+    dataset.partitions.foreach(partition => {
+      val numKV = partition.numKVPair
+      val indices = partition.indices
+      val bins = new Array[Int](numKV)
+      val values = partition.values
+      for (i <- 0 until numKV) {
+        val fidInGroup = indices(i)
+        val trueFid = fidToOriginFid(fidInGroup)
+        val fvalue = values(i).toFloat
+        val binId = Maths.indexOf(featureInfo.getSplits(trueFid), fvalue)
+        bins(i) = binId
       }
       res.appendPartition(indices, bins, partition.indexEnds)
     })
@@ -243,6 +339,9 @@ extends Serializable {
 
   def appendPartition(indices: Array[K], values: Array[V], indexEnds: Array[Int]): Unit =
     appendPartition(new Partition[K, V](indices, values, indexEnds))
+
+  def appendPartition(labels: Array[Float], indices: Array[K], values: Array[V], indexEnds: Array[Int]): Unit =
+    appendPartition(new LabeledPartition[K, V](labels, indices, values, indexEnds))
 
   def get(insId: Int, fid: Int): V = {
     val partId = insLayouts(insId)
